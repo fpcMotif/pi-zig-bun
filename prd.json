@@ -1,0 +1,64 @@
+{
+  "product": {
+    "name": "pi-zig-bun",
+    "tagline": "Next-gen AI coding agent: Zig for performance search, Bun for the agent logic.",
+    "problem_statement": "The existing pi-zig (pure Zig) project is missing a rich runtime for extensibility and hasn't fully optimized its search subsystem. We need a high-performance agent that combines the speed of Zig indexing with the ecosystem and convenience of Bun's runtime for tool execution and agent orchestration.",
+    "references": [
+      "https://github.com/Dicklesworthstone/pi_agent_rust",
+      "https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent",
+      "https://github.com/dmtrKovalenko/fff.nvim"
+    ],
+    "goals": [
+      "Merge Zig's performance for search/indexing/TUI with Bun's runtime for the agent loop and extensions.",
+      "Achieve fff.nvim-class search: <10ms warmed search at 50k files with typo-resistant fuzzy matching.",
+      "Support full TypeScript extensions (skills) natively via Bun.",
+      "Maintain compatibility with pi's JSONL session tree format.",
+      "Deliver a security-first architecture with capability-based gating for tools."
+    ],
+    "non_goals": [
+      "Replacing all Zig components with Bun (we keep Zig for the performance-critical parts).",
+      "Building a full-blown IDE (pi-zig-bun is a CLI-first tool)."
+    ]
+  },
+  "users": {
+    "personas": [
+      { "id": "solo_dev", "name": "Solo terminal developer", "primary_needs": ["speed", "minimal friction", "instant search"] },
+      { "id": "extension_dev", "name": "Extension developer", "primary_needs": ["TypeScript API", "npm support", "Bun runtime"] },
+      { "id": "team_lead", "name": "Team lead", "primary_needs": ["shared skills", "repo-scoped config"] },
+      { "id": "security_officer", "name": "Security / compliance", "primary_needs": ["capability gating", "audit logs"] }
+    ]
+  },
+  "scope": {
+    "v1_must_have": [
+      "Bun-orchestrated agent loop (TypeScript).",
+      "Zig-powered search engine with fff.nvim-style indexing.",
+      "Typo-resistant fuzzy file search (@) and grep (#).",
+      "Interactive TUI with streaming and tool execution.",
+      "JSONL session tree (id/parentId) for branching history.",
+      "Support for OpenAI, Anthropic, and Google GenAI via Bun's fetch.",
+      "Default tools: read, write, edit, bash (sandboxed).",
+      "Capability-based extension system for TS skills."
+    ],
+    "v1_should_have": [
+      "Git-aware ranking for search (modified/untracked files boosted).",
+      "Frecency-based ranking for most used files.",
+      "Web-view mode (optional embedding) via Bun's HTTP server."
+    ]
+  },
+  "performance_targets": [
+    { "metric": "search_latency_p95_50k_files", "target": "10ms" },
+    { "metric": "initial_index_time_50k_files", "target": "2.0s" },
+    { "metric": "tui_render_latency", "target": "16ms (60fps)" },
+    { "metric": "cold_start_time", "target": "150ms" }
+  ],
+  "security": {
+    "principles": ["deny by default", "capability-based access", "audited execution"],
+    "capability_list": ["fs.read", "fs.write", "exec.run", "net.http", "session.access"]
+  },
+  "milestones": [
+    { "name": "M1 - Skeleton", "deliverables": ["Zig search engine binary", "Bun agent harness", "JSON-RPC bridge"] },
+    { "name": "M2 - fff-Search v1", "deliverables": ["Indexer", "Fuzzy Matcher", "Grep support"] },
+    { "name": "M3 - Agent MVP", "deliverables": ["Streaming chat", "Tool execution", "JSONL Sessions"] },
+    { "name": "M4 - Skills & Extensions", "deliverables": ["TS Skill loader", "Capability gating", "npm support"] }
+  ]
+}

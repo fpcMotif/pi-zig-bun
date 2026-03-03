@@ -1,0 +1,12 @@
+---
+description: Memory reminders for coding and Git workflow in pi-zig-bun
+globs: "*.ts, *.zig, *.md"
+alwaysApply: false
+---
+
+- For future coding sessions, use this project memory:
+  1. Use Bun-first command execution (`bun`, `bunx`, `bun test/build/install`).
+  2. When choosing tooling for quality checks, use `prek` as the default pre-commit tool.
+  3. If exploring external tooling or behavior, sequence is: `search`, `eza`, then `gemini -y p`.
+  4. Keep logs for transport/debug off from final code.
+  5. Always verify `bunx tsc --noEmit` and `zig build` before commit.
