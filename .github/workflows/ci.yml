@@ -9,6 +9,9 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      CACHE_VERSION: v1
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,9 +27,9 @@ jobs:
           path: |
             ~/.bun/install/cache
             node_modules
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          key: bun-${{ runner.os }}-${{ env.CACHE_VERSION }}-${{ hashFiles('bun.lock') }}-${{ hashFiles('.github/workflows/ci.yml') }}
           restore-keys: |
-            bun-${{ runner.os }}-
+            bun-${{ runner.os }}-${{ env.CACHE_VERSION }}-
 
       - name: Setup Zig
         uses: goto-bus-stop/setup-zig@v3
@@ -39,9 +42,9 @@ jobs:
           path: |
             .zig-cache
             ~/.cache/zig
-          key: zig-${{ runner.os }}-0.15.2-${{ hashFiles('build.zig') }}-${{ hashFiles('src/zig/main.zig') }}
+          key: zig-${{ runner.os }}-${{ env.CACHE_VERSION }}-0.15.2-${{ hashFiles('build.zig') }}-${{ hashFiles('src/zig/main.zig') }}-${{ hashFiles('.github/workflows/ci.yml') }}
           restore-keys: |
-            zig-${{ runner.os }}-0.15.2-
+            zig-${{ runner.os }}-${{ env.CACHE_VERSION }}-0.15.2-
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -53,9 +56,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             ~/.cargo/bin
-          key: cargo-${{ runner.os }}-stable
+          key: cargo-${{ runner.os }}-${{ env.CACHE_VERSION }}-stable-${{ hashFiles('.github/workflows/ci.yml') }}
           restore-keys: |
-            cargo-${{ runner.os }}-
+            cargo-${{ runner.os }}-${{ env.CACHE_VERSION }}-
 
       - name: Install dependencies
         run: bun install
