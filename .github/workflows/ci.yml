@@ -18,10 +18,44 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Cache Bun globals and dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            node_modules
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
       - name: Setup Zig
         uses: goto-bus-stop/setup-zig@v3
         with:
           version: 0.15.2
+
+      - name: Cache Zig build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache
+            ~/.cache/zig
+          key: zig-${{ runner.os }}-0.15.2-${{ hashFiles('build.zig') }}-${{ hashFiles('src/zig/main.zig') }}
+          restore-keys: |
+            zig-${{ runner.os }}-0.15.2-
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+          key: cargo-${{ runner.os }}-stable
+          restore-keys: |
+            cargo-${{ runner.os }}-
 
       - name: Install dependencies
         run: bun install
@@ -32,11 +66,13 @@ jobs:
       - name: Build Zig backend
         run: zig build
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install prek
-        run: cargo install prek
+      - name: Install or ensure prek
+        run: |
+          if ! command -v prek >/dev/null 2>&1; then
+            cargo install prek
+          else
+            echo "prek already available"
+          fi
 
       - name: Run prek pre-commit checks
         run: prek run
