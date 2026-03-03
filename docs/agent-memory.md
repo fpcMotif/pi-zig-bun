@@ -23,7 +23,15 @@ All commits in this repo should route through `prek` (Rust tool):
   - `bunx tsc --noEmit` (local validation)
   - `zig build` (Zig validation)
   - `prek run` (pre-commit quality gate)
+  - `bun run ci:search-regression` (multi-call regression sanity)
   - `git commit` / `git push`
 
 ## 5) Session memory reminder
 - Don’t forget to keep the Zig/JS boundary clean, preserve newline-delimited JSON-RPC, and avoid debug logging in final code.
+
+## 6) CI workflow reminder
+- GitHub Actions (`.github/workflows/ci.yml`) runs:
+  - `bunx tsc --noEmit`
+  - `zig build`
+  - `prek run`
+  - `bun run ci:search-regression`

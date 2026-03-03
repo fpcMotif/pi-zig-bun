@@ -6,7 +6,9 @@
   "scripts": {
     "prepare": "git config core.hooksPath .githooks",
     "precommit": "./scripts/pre-commit.sh",
-    "validate": "bunx tsc --noEmit"
+    "validate": "bunx tsc --noEmit",
+    "ci:search-regression": "bun scripts/ci-search-regression.ts",
+    "ci": "bun run validate && zig build && bun run ci:search-regression"
   },
   "devDependencies": {
     "@types/bun": "latest"

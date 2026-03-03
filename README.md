@@ -45,4 +45,7 @@ Commit gate flow used by this project:
 - `bunx tsc --noEmit`
 - `zig build`
 - `prek run`
+- `bun run ci:search-regression`
+
+GitHub Actions runs the same checks on PRs and push-to-main in `.github/workflows/ci.yml`.
 

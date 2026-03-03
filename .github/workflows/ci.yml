@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Zig
+        uses: goto-bus-stop/setup-zig@v3
+        with:
+          version: 0.15.2
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Validate TypeScript
+        run: bun run validate
+
+      - name: Build Zig backend
+        run: zig build
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install prek
+        run: cargo install prek
+
+      - name: Run prek pre-commit checks
+        run: prek run
+
+      - name: Run search regression checks
+        run: bun run ci:search-regression
