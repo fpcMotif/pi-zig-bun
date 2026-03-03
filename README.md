@@ -49,3 +49,14 @@ Commit gate flow used by this project:
 
 GitHub Actions runs the same checks on PRs and push-to-main in `.github/workflows/ci.yml`.
 
+## CI cache version policy
+
+The workflow uses a cache version key (`CACHE_VERSION`) in `.github/workflows/ci.yml` to make cache invalidation explicit.
+When CI behavior changes materially (dependency changes, toolchain flow changes, cache logic updates), bump this value:
+
+```yaml
+CACHE_VERSION: v3
+```
+
+This forces fresh cache entries on the next run.
+

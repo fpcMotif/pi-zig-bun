@@ -35,3 +35,4 @@ All commits in this repo should route through `prek` (Rust tool):
   - `zig build`
   - `prek run`
   - `bun run ci:search-regression`
+- Cache policy: bump `CACHE_VERSION` (in `.github/workflows/ci.yml`) when CI/tooling behavior changes to force cache refresh on next run.
