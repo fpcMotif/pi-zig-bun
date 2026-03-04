@@ -66,6 +66,9 @@ jobs:
       - name: Validate TypeScript
         run: bun run validate
 
+      - name: Run unit and integration tests
+        run: bun run test
+
       - name: Build Zig backend
         run: zig build
 
@@ -82,3 +85,6 @@ jobs:
 
       - name: Run search regression checks
         run: bun run ci:search-regression
+
+      - name: Check requirements trace coverage
+        run: bun run ci:requirements-coverage

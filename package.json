@@ -8,7 +8,9 @@
     "precommit": "./scripts/pre-commit.sh",
     "validate": "bunx tsc --noEmit",
     "ci:search-regression": "bun scripts/ci-search-regression.ts",
-    "ci": "bun run validate && zig build && bun run ci:search-regression"
+    "ci": "bun run validate && bun run test && zig build && bun run ci:search-regression && bun run ci:requirements-coverage",
+    "test": "bun test",
+    "ci:requirements-coverage": "bun scripts/check-requirements-coverage.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
