@@ -66,6 +66,12 @@ jobs:
       - name: Validate TypeScript
         run: bun run validate
 
+      - name: Run Bun unit/integration tests
+        run: bun run test
+
+      - name: Run Zig unit tests
+        run: bun run test:zig
+
       - name: Build Zig backend
         run: zig build
 
@@ -82,3 +88,16 @@ jobs:
 
       - name: Run search regression checks
         run: bun run ci:search-regression
+
+      - name: Run performance gates
+        run: bun run ci:perf
+
+      - name: Upload CI artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: |
+            .pi/search-bridge.stderr.log
+            .pi/perf-gates.log
+          if-no-files-found: ignore
