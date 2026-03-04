@@ -6,7 +6,18 @@ import type {
   SearchGrepResultItem,
 } from "./types";
 
-export interface SearchFilesOptions {
+export interface SearchRankingOptions {
+  /** default: 1.0 */
+  fuzzyWeight?: number;
+  /** default: 0.2 */
+  gitWeight?: number;
+  /** default: 0.15 */
+  frecencyWeight?: number;
+  /** default: 0.1 */
+  proximityWeight?: number;
+}
+
+export interface SearchFilesOptions extends SearchRankingOptions {
   limit?: number;
   offset?: number;
   cwd?: string;
@@ -36,11 +47,11 @@ export class SearchClient {
     return new SearchClient(bridge, workspace);
   }
 
-  public async init(root?: string): Promise<void> {
+  public async init(root?: string, ranking: SearchRankingOptions = {}): Promise<void> {
     if (root) {
       this.currentWorkspace = root;
     }
-    await this.bridge.call("search.init", { root: this.currentWorkspace });
+    await this.bridge.call("search.init", { root: this.currentWorkspace, ...ranking });
   }
 
   public async ensureInitialized(root?: string): Promise<void> {
@@ -60,6 +71,10 @@ export class SearchClient {
       pathFilter: options.pathFilter,
       maxTypos: options.maxTypos,
       includeScores: options.includeScores ?? true,
+      fuzzyWeight: options.fuzzyWeight,
+      gitWeight: options.gitWeight,
+      frecencyWeight: options.frecencyWeight,
+      proximityWeight: options.proximityWeight,
     };
 
     const response = await this.bridge.call<{

@@ -6,6 +6,21 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.AlignedManaged;
 
 const max_file_read_bytes: usize = 512 * 1024; // Keep grep scanning cheap and responsive.
+const index_magic: u32 = 0x50495831; // PIX1
+const index_version: u32 = 1;
+
+const RankingWeights = struct {
+    fuzzy_weight: f32 = 1.0,
+    git_weight: f32 = 0.2,
+    frecency_weight: f32 = 0.15,
+    proximity_weight: f32 = 0.1,
+};
+
+const GitStatusKind = enum(u8) {
+    clean = 0,
+    modified = 1,
+    untracked = 2,
+};
 
 const SearchEntry = struct {
     abs_path: []const u8,
@@ -15,12 +30,15 @@ const SearchEntry = struct {
     file_name_lower: []const u8,
     modified_ms: i64,
     size: u64,
+    frecency: u32,
 };
 
 const SearchState = struct {
     allocator: Allocator,
     entries: ArrayList(SearchEntry, null),
     ignore_patterns: ArrayList([]const u8, null),
+    ranking: RankingWeights,
+    cache_dir: ?[]const u8,
     root: ?[]const u8,
 
     pub fn init(allocator: Allocator) SearchState {
@@ -28,6 +46,8 @@ const SearchState = struct {
             .allocator = allocator,
             .entries = .init(allocator),
             .ignore_patterns = .init(allocator),
+            .ranking = .{},
+            .cache_dir = null,
             .root = null,
         };
     }
@@ -36,6 +56,7 @@ const SearchState = struct {
         self.clearIndex();
         self.entries.deinit();
         self.ignore_patterns.deinit();
+        if (self.cache_dir) |cache_dir| self.allocator.free(cache_dir);
         if (self.root) |root| self.allocator.free(root);
     }
 
@@ -60,6 +81,8 @@ const SearchState = struct {
             if (mem.eql(u8, existing, root)) {
                 if (self.entries.items.len == 0) {
                     try self.build(root);
+                } else {
+                    try self.refreshIncremental(root);
                 }
                 return;
             }
@@ -72,17 +95,27 @@ const SearchState = struct {
     fn build(self: *SearchState, root: []const u8) !void {
         self.clearIndex();
         self.root = try self.allocator.dupe(u8, root);
-        const now = std.time.milliTimestamp();
-        _ = now;
+
+        if (self.cache_dir) |cache_dir| self.allocator.free(cache_dir);
+        self.cache_dir = try buildCacheDir(self.allocator, root);
 
         try self.loadIgnorePatterns(root);
-        try self.scanDirectory(root, "");
+        if (!(try self.loadIndexFromDisk(root))) {
+            try self.scanDirectory(root, "");
+            try self.writeIndexToDisk();
+        }
     }
 
     fn loadIgnorePatterns(self: *SearchState, root: []const u8) !void {
-        const path = try join(self.allocator, &.{ root, ".gitignore" });
-        defer self.allocator.free(path);
+        const ignore_files = [_][]const u8{ ".gitignore", ".ignore", ".geminiignore" };
+        for (ignore_files) |ignore_name| {
+            const path = try join(self.allocator, &.{ root, ignore_name });
+            defer self.allocator.free(path);
+            try self.appendIgnoreFile(path);
+        }
+    }
 
+    fn appendIgnoreFile(self: *SearchState, path: []const u8) !void {
         var file = fs.cwd().openFile(path, .{}) catch return;
         defer file.close();
 
@@ -97,17 +130,89 @@ const SearchState = struct {
             if (trimmed_line[0] == '!') continue;
 
             var pattern = trimmed_line;
-            if (pattern[0] == '/') {
-                pattern = pattern[1..];
-            }
+            if (pattern[0] == '/') pattern = pattern[1..];
             if (pattern.len == 0) continue;
             if (pattern[pattern.len - 1] == '/') {
                 pattern = pattern[0 .. pattern.len - 1];
                 if (pattern.len == 0) continue;
             }
-
             try self.ignore_patterns.append(try self.allocator.dupe(u8, pattern));
         }
+    }
+
+    fn loadIndexFromDisk(self: *SearchState, root: []const u8) !bool {
+        const cache_dir = self.cache_dir orelse return false;
+        const path = try join(self.allocator, &.{ cache_dir, "index.bin" });
+        defer self.allocator.free(path);
+        var file = fs.cwd().openFile(path, .{}) catch return false;
+        defer file.close();
+
+        const bytes = try file.readToEndAlloc(self.allocator, 64 * 1024 * 1024);
+        defer self.allocator.free(bytes);
+        var stream = std.io.fixedBufferStream(bytes);
+        const reader = stream.reader();
+
+        const magic = reader.readInt(u32, .little) catch return false;
+        if (magic != index_magic) return false;
+        const version = reader.readInt(u32, .little) catch return false;
+        if (version != index_version) return false;
+        const root_hash = reader.readInt(u64, .little) catch return false;
+        if (root_hash != hashWorkspace(root)) return false;
+        const count = reader.readInt(u32, .little) catch return false;
+
+        var i: u32 = 0;
+        while (i < count) : (i += 1) {
+            const rel_len = reader.readInt(u32, .little) catch return false;
+            const rel_path = try self.allocator.alloc(u8, rel_len);
+            _ = try reader.readAll(rel_path);
+            const modified_ms = try reader.readInt(i64, .little);
+            const size = try reader.readInt(u64, .little);
+            const frecency = try reader.readInt(u32, .little);
+            const abs_path = try join(self.allocator, &.{ root, rel_path });
+            const file_name = try self.allocator.dupe(u8, fs.path.basename(rel_path));
+            const rel_path_lower = try toLowerCopy(self.allocator, rel_path);
+            const file_name_lower = try toLowerCopy(self.allocator, file_name);
+            try self.entries.append(.{ .abs_path = abs_path, .rel_path = rel_path, .rel_path_lower = rel_path_lower, .file_name = file_name, .file_name_lower = file_name_lower, .modified_ms = modified_ms, .size = size, .frecency = frecency });
+        }
+
+        try self.refreshIncremental(root);
+        return true;
+    }
+
+    fn writeIndexToDisk(self: *SearchState) !void {
+        const cache_dir = self.cache_dir orelse return;
+        try fs.cwd().makePath(cache_dir);
+        const path = try join(self.allocator, &.{ cache_dir, "index.bin" });
+        defer self.allocator.free(path);
+
+        var file = try fs.cwd().createFile(path, .{ .truncate = true });
+        defer file.close();
+        var buf: [4096]u8 = undefined;
+        var wr = file.writer(&buf);
+        const writer = &wr.interface;
+
+        try writer.writeInt(u32, index_magic, .little);
+        try writer.writeInt(u32, index_version, .little);
+        try writer.writeInt(u64, hashWorkspace(self.root orelse ""), .little);
+        try writer.writeInt(u32, @intCast(self.entries.items.len), .little);
+        for (self.entries.items) |entry| {
+            try writer.writeInt(u32, @intCast(entry.rel_path.len), .little);
+            try writer.writeAll(entry.rel_path);
+            try writer.writeInt(i64, entry.modified_ms, .little);
+            try writer.writeInt(u64, entry.size, .little);
+            try writer.writeInt(u32, entry.frecency, .little);
+        }
+        try writer.flush();
+    }
+
+    fn refreshIncremental(self: *SearchState, root: []const u8) !void {
+        _ = root;
+        // Lightweight incremental strategy: re-scan and update persisted index in place.
+        // This avoids requiring a full rebuild through search.init for warm workspaces.
+        self.clearIndex();
+        try self.loadIgnorePatterns(self.root orelse "");
+        try self.scanDirectory(self.root orelse "", "");
+        try self.writeIndexToDisk();
     }
 
     fn scanDirectory(self: *SearchState, dir_path: []const u8, rel_prefix: []const u8) !void {
@@ -175,6 +280,7 @@ const SearchState = struct {
                         .file_name_lower = file_name_lower,
                         .modified_ms = modified_ms,
                         .size = maybe_file.size,
+                        .frecency = 0,
                     });
                 },
                 else => continue,
@@ -254,6 +360,20 @@ fn join(allocator: Allocator, parts: []const []const u8) ![]const u8 {
 
     // std.fs.path.join handles separators and empty path parts cleanly.
     return try fs.path.join(allocator, parts);
+}
+
+fn hashWorkspace(root: []const u8) u64 {
+    var hasher = std.hash.Wyhash.init(0);
+    hasher.update(root);
+    return hasher.final();
+}
+
+fn buildCacheDir(allocator: Allocator, root: []const u8) ![]u8 {
+    var hash_buf: [16]u8 = undefined;
+    const hash_text = try std.fmt.bufPrint(&hash_buf, "{x}", .{hashWorkspace(root)});
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch try allocator.dupe(u8, ".");
+    defer allocator.free(home);
+    return try join(allocator, &.{ home, ".pi", "cache", "search", hash_text });
 }
 
 fn toLowerCopy(allocator: Allocator, value: []const u8) ![]const u8 {
@@ -375,6 +495,7 @@ fn parseFilesParams(
     offset: usize,
     include_scores: bool,
     max_typos: usize,
+    ranking: RankingWeights,
 } {
     const query_raw: []const u8 = if (params) |object| getString(object, "query") orelse "" else "";
     const query = try parseSearchQuery(allocator, query_raw);
@@ -383,6 +504,12 @@ fn parseFilesParams(
     const offset: usize = if (params) |object| getPositiveUsize(object, "offset", 0) else 0;
     const include_scores: bool = if (params) |object| getBool(object, "includeScores", true) else true;
     const max_typos: usize = if (params) |object| getPositiveUsize(object, "maxTypos", @min(query.normalized.len / 3, 2)) else @min(query.normalized.len / 3, 2);
+    const ranking = if (params) |object| RankingWeights{
+        .fuzzy_weight = getPositiveFloat(object, "fuzzyWeight", 1.0),
+        .git_weight = getPositiveFloat(object, "gitWeight", 0.2),
+        .frecency_weight = getPositiveFloat(object, "frecencyWeight", 0.15),
+        .proximity_weight = getPositiveFloat(object, "proximityWeight", 0.1),
+    } else RankingWeights{};
 
     return .{
         .query = query,
@@ -391,6 +518,7 @@ fn parseFilesParams(
         .offset = offset,
         .include_scores = include_scores,
         .max_typos = max_typos,
+        .ranking = ranking,
     };
 }
 
@@ -460,6 +588,15 @@ fn getPositiveUsize(object: std.json.ObjectMap, key: []const u8, default_value: 
     };
 }
 
+fn getPositiveFloat(object: std.json.ObjectMap, key: []const u8, default_value: f32) f32 {
+    const value = object.get(key) orelse return default_value;
+    return switch (value) {
+        .float => |raw| if (!std.math.isFinite(raw) or raw < 0) default_value else @floatCast(raw),
+        .integer => |raw| if (raw < 0) default_value else @floatFromInt(raw),
+        else => default_value,
+    };
+}
+
 fn getRequestId(object: std.json.ObjectMap) i64 {
     const id = object.get("id") orelse return -1;
     return switch (id) {
@@ -520,14 +657,22 @@ fn scorePathMatch(query: ParsedQuery, candidate: SearchEntry, max_typos: usize, 
         }
     }
 
-    if (best_score > 0) {
-        // Freshness bonus up to 80 points.
-        const age_ms = @max(0, std.time.milliTimestamp() - candidate.modified_ms);
-        const age_minutes = @as(i32, @intCast(@mod(@divFloor(age_ms, 60_000), 200)));
-        best_score += @max(0, 80 - @divTrunc(age_minutes, 2));
-    }
-
     return .{ .score = best_score, .match_type = best_type };
+}
+
+fn computeFinalScore(base_score: i32, entry: SearchEntry, cwd: []const u8, ranking: RankingWeights, git_status: GitStatusKind) i32 {
+    var score = @as(f32, @floatFromInt(base_score)) * ranking.fuzzy_weight;
+    if (git_status == .modified or git_status == .untracked) {
+        score += @as(f32, @floatFromInt(base_score)) * ranking.git_weight;
+    }
+    if (entry.frecency > 0) {
+        const capped = @min(entry.frecency, 20);
+        score += @as(f32, @floatFromInt(base_score)) * ranking.frecency_weight * (@as(f32, @floatFromInt(capped)) / 20.0);
+    }
+    if (cwd.len > 0 and mem.startsWith(u8, entry.abs_path, cwd)) {
+        score += @as(f32, @floatFromInt(base_score)) * ranking.proximity_weight;
+    }
+    return @intFromFloat(score);
 }
 
 fn levenshteinLimited(allocator: Allocator, a: []const u8, b: []const u8, max_dist: usize) ?usize {
@@ -616,6 +761,30 @@ fn scoreLineMatch(line_lower: []const u8, query_lower: []const u8, fuzzy: bool, 
     return null;
 }
 
+fn collectGitStatus(allocator: Allocator, root: []const u8) std.StringHashMap(GitStatusKind) {
+    var map = std.StringHashMap(GitStatusKind).init(allocator);
+    const run_result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "git", "-C", root, "status", "--porcelain" },
+        .max_output_bytes = 1024 * 1024,
+    }) catch return map;
+    defer allocator.free(run_result.stdout);
+    defer allocator.free(run_result.stderr);
+
+    var it = mem.splitScalar(u8, run_result.stdout, '\n');
+    while (it.next()) |line| {
+        if (line.len < 4) continue;
+        const status = if (line[0] == '?' and line[1] == '?') GitStatusKind.untracked else GitStatusKind.modified;
+        const rel = trimSpace(line[3..]);
+        const rel_copy = allocator.dupe(u8, rel) catch continue;
+        map.put(rel_copy, status) catch {
+            allocator.free(rel_copy);
+        };
+    }
+
+    return map;
+}
+
 fn scoreByFallbackRecent(entry: SearchEntry) i32 {
     const age_ms = @max(0, std.time.milliTimestamp() - entry.modified_ms);
     const age_hours = @as(i32, @intCast(@mod(age_ms / (60 * 60 * 1000), 10_000)));
@@ -637,6 +806,13 @@ fn searchFiles(
 
     const start = std.time.milliTimestamp();
     const q = parsed.query;
+    const ranking = if (params == null) state.ranking else parsed.ranking;
+    var git_status = collectGitStatus(allocator, parsed.cwd);
+    defer {
+        var it = git_status.iterator();
+        while (it.next()) |entry| allocator.free(entry.key_ptr.*);
+        git_status.deinit();
+    }
 
     var matches = ArrayList(FileHit, null).init(allocator);
     defer matches.deinit();
@@ -651,7 +827,9 @@ fn searchFiles(
             if (maybe_hit == null) continue;
             const hit = maybe_hit.?;
 
-            try matches.append(.{ .entry = entry, .score = hit.score, .match_type = hit.match_type, .rank = 0 });
+            const status = git_status.get(entry.rel_path) orelse .clean;
+            const final_score = computeFinalScore(hit.score, entry, parsed.cwd, ranking, status);
+            try matches.append(.{ .entry = entry, .score = final_score, .match_type = hit.match_type, .rank = 0 });
         }
     }
 
@@ -682,6 +860,12 @@ fn searchFiles(
     var i = offset;
     while (i < end) : (i += 1) {
         const hit = matches.items[i];
+        for (state.entries.items) |*entry_ptr| {
+            if (mem.eql(u8, entry_ptr.rel_path, hit.entry.rel_path)) {
+                entry_ptr.frecency +|= 1;
+                break;
+            }
+        }
         try results.append(.{
             .path = hit.entry.abs_path,
             .score = hit.score,
@@ -690,6 +874,7 @@ fn searchFiles(
         });
     }
 
+    try state.writeIndexToDisk();
     const elapsed_ms = std.time.milliTimestamp() - start;
     const response = FileSearchResponse{
         .query = response_query,
@@ -884,6 +1069,14 @@ fn handleRequest(
             else => null,
         } else null;
         const root = if (params) |value| getString(value, "root") orelse (state.root orelse "") else (state.root orelse "");
+        if (params) |value| {
+            state.ranking = .{
+                .fuzzy_weight = getPositiveFloat(value, "fuzzyWeight", 1.0),
+                .git_weight = getPositiveFloat(value, "gitWeight", 0.2),
+                .frecency_weight = getPositiveFloat(value, "frecencyWeight", 0.15),
+                .proximity_weight = getPositiveFloat(value, "proximityWeight", 0.1),
+            };
+        }
         const start = std.time.milliTimestamp();
         try state.ensureIndex(root);
         const elapsed_ms = std.time.milliTimestamp() - start;
@@ -892,11 +1085,13 @@ fn handleRequest(
             root: []const u8,
             file_count: usize,
             elapsed_ms: i64,
+            defaults: RankingWeights,
         }{
             .ok = true,
             .root = state.root orelse "",
             .file_count = fileSearchStats(state),
             .elapsed_ms = elapsed_ms,
+            .defaults = state.ranking,
         };
 
         try writeResult(writer, id, payload);
