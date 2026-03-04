@@ -1,4 +1,5 @@
 import { readdir } from "node:fs/promises";
+import { watch, type FSWatcher } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionLoaderResult, SkillContext, SkillModule } from "./types";
@@ -89,4 +90,114 @@ export async function loadSkills(
   }
 
   return result;
+}
+
+/**
+ * Reload a single skill module from disk and re-register its tools.
+ *
+ * Uses a cache-busting query parameter so the runtime does not serve a stale
+ * cached version of the module.
+ */
+async function reloadSkillModule(
+  fullPath: string,
+  root: string,
+  registry: ToolRegistry,
+): Promise<void> {
+  const bustUrl = `${pathToFileURL(fullPath).href}?t=${Date.now()}`;
+  const imported = await import(bustUrl);
+  const moduleValue = (imported.default ?? imported) as Partial<SkillModule>;
+  const skill = moduleValue as SkillModule;
+
+  if (!skill || typeof skill.register !== "function") {
+    return;
+  }
+
+  const ctx: SkillContext = {
+    registerTool: (tool: Tool) => registry.register(tool),
+    registerHook: (_name: string, _cb: () => void | Promise<void>) => {
+      // Reserved for future UI/event hooks.
+    },
+    capabilities: {
+      require: () => {
+        // extension authors can call this directly if needed
+      },
+    },
+    root,
+  };
+
+  await skill.register(ctx);
+}
+
+/**
+ * Watch skill directories for `.ts` file changes and hot-reload them into
+ * the tool registry.
+ *
+ * Returns an object with a `stop()` method that tears down all watchers.
+ * Changes are debounced at 100 ms per file to avoid redundant reloads on
+ * rapid successive saves (e.g. editor auto-format after manual save).
+ */
+export function watchSkills(
+  registry: ToolRegistry,
+  searchRoots: string[],
+): { stop: () => void } {
+  const watchers: FSWatcher[] = [];
+  /** Per-file debounce timers keyed by absolute path. */
+  const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  let stopped = false;
+
+  const DEBOUNCE_MS = 100;
+
+  for (const root of searchRoots) {
+    try {
+      const watcher = watch(root, { persistent: false }, (eventType, filename) => {
+        if (stopped) return;
+        if (!filename || !filename.endsWith(".ts")) return;
+
+        const fullPath = path.join(root, filename);
+
+        // Clear any pending timer for this exact file so we only fire once
+        // per burst of events.
+        const existing = debounceTimers.get(fullPath);
+        if (existing !== undefined) {
+          clearTimeout(existing);
+        }
+
+        debounceTimers.set(
+          fullPath,
+          setTimeout(() => {
+            debounceTimers.delete(fullPath);
+            if (stopped) return;
+
+            reloadSkillModule(fullPath, root, registry).catch((err: unknown) => {
+              // Log but never crash the host process.
+              console.error(
+                `[watchSkills] failed to reload ${fullPath}: ${(err as Error).message}`,
+              );
+            });
+          }, DEBOUNCE_MS),
+        );
+      });
+
+      watchers.push(watcher);
+    } catch {
+      // If the directory doesn't exist or is inaccessible, skip silently –
+      // mirrors the behaviour of loadSkills.
+    }
+  }
+
+  return {
+    stop() {
+      stopped = true;
+
+      for (const timer of debounceTimers.values()) {
+        clearTimeout(timer);
+      }
+      debounceTimers.clear();
+
+      for (const w of watchers) {
+        w.close();
+      }
+      watchers.length = 0;
+    },
+  };
 }
