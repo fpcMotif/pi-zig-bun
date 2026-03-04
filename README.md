@@ -14,6 +14,12 @@ bun run index.ts
 
 This project was created using `bun init` in bun v1.2.22. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
 
+
+## Requirements traceability
+
+- Acceptance matrix: [`docs/acceptance-matrix.md`](docs/acceptance-matrix.md)
+- If product requirements, spec behavior, or user stories change, update this matrix in the same PR.
+
 ## Local workflow memory
 
 - `search`/`eza` for repo inspection.
