@@ -6,7 +6,7 @@ import { parseCli, usage } from "./cli";
 import { SessionStore, SessionTree } from "./session/tree";
 import { MemoryToolRegistry, type Tool } from "./tools/types";
 import { builtinTools } from "./tools/builtin";
-import { CapabilityManager } from "./permissions";
+import { CapabilityManager, loadPolicyFile } from "./permissions";
 import { loadSkills } from "./extensions/loader";
 import { createAgentFromEnv, type AgentMessage } from "./agent";
 
@@ -188,13 +188,20 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
 
   const search = SearchClient.from({ workspaceRoot: args.cwd });
   await search.ensureInitialized(args.cwd);
-  const capabilities = new CapabilityManager({
-    "fs.read": "*",
-    "fs.write": "*",
-    "fs.execute": "*",
-    "session.access": "*",
-    "net.http": "*",
-  });
+  const policyPath = path.join(args.cwd, ".pi", "policy.json");
+  const policy = loadPolicyFile(policyPath);
+  const hasExplicitPolicy = Object.keys(policy).length > 0;
+  const capabilities = new CapabilityManager(
+    hasExplicitPolicy
+      ? policy
+      : {
+          "fs.read": "*",
+          "fs.write": "*",
+          "fs.execute": "*",
+          "session.access": "*",
+          "net.http": "*",
+        },
+  );
 
   const registry = new MemoryToolRegistry();
   registerBuiltinTools(registry);

@@ -118,6 +118,32 @@ export class CapabilityManager {
   }
 }
 
+export function loadPolicyFile(policyPath: string): CapabilityPolicy {
+  try {
+    const raw = require("node:fs").readFileSync(policyPath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) {
+      throw new Error("policy.json must be a JSON object");
+    }
+    const policy: CapabilityPolicy = {};
+    const validKeys: Capability[] = ["fs.read", "fs.write", "fs.execute", "net.http", "session.access"];
+    for (const key of validKeys) {
+      const value = parsed[key];
+      if (value === "*") {
+        policy[key] = "*";
+      } else if (Array.isArray(value) && value.every((v: unknown) => typeof v === "string")) {
+        policy[key] = value as string[];
+      }
+    }
+    return policy;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return {};
+    }
+    throw err;
+  }
+}
+
 export type ToolResult = {
   ok: boolean;
   output?: string;

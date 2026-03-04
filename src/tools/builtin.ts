@@ -87,7 +87,7 @@ export const editTool: Tool<{ path: string; from: string; to: string }, ToolResu
       };
     }
 
-    writeFileSync(resolved, payload.replace(from, to));
+    writeFileSync(resolved, payload.replaceAll(from, to));
     return {
       ok: true,
       output: `replaced text in ${resolved}`,
