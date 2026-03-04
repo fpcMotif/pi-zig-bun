@@ -92,6 +92,9 @@ jobs:
       - name: Run performance gates
         run: bun run ci:perf
 
+      - name: Check requirements trace coverage
+        run: bun run ci:requirements-coverage
+
       - name: Upload CI artifacts
         if: always()
         uses: actions/upload-artifact@v4

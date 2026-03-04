@@ -11,7 +11,8 @@
     "test:zig": "zig test src/zig/main.zig",
     "ci:search-regression": "bun scripts/ci-search-regression.ts",
     "ci:perf": "bun scripts/perf-gates.ts",
-    "ci": "bun run validate && bun run test && bun run test:zig && zig build && bun run ci:search-regression && bun run ci:perf"
+    "ci:requirements-coverage": "bun scripts/check-requirements-coverage.ts",
+    "ci": "bun run validate && bun run test && bun run test:zig && zig build && bun run ci:search-regression && bun run ci:perf && bun run ci:requirements-coverage"
   },
   "devDependencies": {
     "@types/bun": "latest"
