@@ -1024,3 +1024,79 @@ pub fn main() !void {
 
     try out_writer.flush();
 }
+
+test "fuzzy ranking prefers exact file name match" {
+    const allocator = std.testing.allocator;
+    const query = try parseSearchQuery(allocator, "alpha");
+    defer deinitParsedQuery(allocator, query);
+
+    const exact = SearchEntry{
+        .abs_path = "alpha.ts",
+        .rel_path = "alpha.ts",
+        .rel_path_lower = "alpha.ts",
+        .file_name = "alpha.ts",
+        .file_name_lower = "alpha.ts",
+        .modified_ms = 0,
+        .size = 10,
+    };
+    const fuzzy = SearchEntry{
+        .abs_path = "alpah.ts",
+        .rel_path = "alpah.ts",
+        .rel_path_lower = "alpah.ts",
+        .file_name = "alpah.ts",
+        .file_name_lower = "alpah.ts",
+        .modified_ms = 0,
+        .size = 10,
+    };
+
+    const exact_score = try scorePathMatch(query, exact, 2, allocator);
+    const fuzzy_score = try scorePathMatch(query, fuzzy, 2, allocator);
+    try std.testing.expect(exact_score != null);
+    try std.testing.expect(fuzzy_score != null);
+    try std.testing.expect(exact_score.?.score > fuzzy_score.?.score);
+}
+
+test "ignore parsing applies basic gitignore entries" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{ .sub_path = ".gitignore", .data = "node_modules\n/build/\n# comment\n!ignored\n" });
+
+    const allocator = std.testing.allocator;
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    var state = SearchState.init(allocator);
+    defer state.deinit();
+
+    try state.loadIgnorePatterns(root);
+    try std.testing.expect(shouldIgnorePath("node_modules/lib.ts", &state.ignore_patterns));
+    try std.testing.expect(shouldIgnorePath("build/out.js", &state.ignore_patterns));
+    try std.testing.expect(!shouldIgnorePath("src/main.ts", &state.ignore_patterns));
+}
+
+test "grep scoring finds exact and fuzzy matches" {
+    const allocator = std.testing.allocator;
+    const exact = scoreLineMatch("needle line", "needle", false, 1, allocator);
+    try std.testing.expect(exact != null);
+    const fuzzy = scoreLineMatch("neddle typo", "needle", true, 2, allocator);
+    try std.testing.expect(fuzzy != null);
+    try std.testing.expect(fuzzy.? <= exact.?);
+}
+
+test "json-rpc contract handles ping and unknown methods" {
+    const allocator = std.testing.allocator;
+    var state = SearchState.init(allocator);
+    defer state.deinit();
+
+    var out_buf: [4096]u8 = undefined;
+    var stream = std.io.fixedBufferStream(&out_buf);
+    var writer = stream.writer();
+    const iface = &writer.interface;
+
+    try handleRequest(allocator, &state, iface, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}");
+    try handleRequest(allocator, &state, iface, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"missing\"}");
+
+    const output = stream.getWritten();
+    try std.testing.expect(mem.indexOf(u8, output, "\"result\":\"pong\"") != null);
+    try std.testing.expect(mem.indexOf(u8, output, "\"code\":-32601") != null);
+}
