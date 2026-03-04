@@ -9,6 +9,10 @@ import { builtinTools } from "./tools/builtin";
 import { CapabilityManager, loadPolicyFile } from "./permissions";
 import { loadSkills } from "./extensions/loader";
 import { createAgentFromEnv, type AgentMessage } from "./agent";
+import type { AgentToolCall } from "./agent/types";
+import type { ToolExecutionContext } from "./tools/types";
+import type { ToolResult } from "./permissions";
+import { TuiRenderer } from "./tui";
 
 interface AppRuntime {
   search: SearchClient;
@@ -63,19 +67,171 @@ async function runGrepCommand(runtime: AppRuntime, query: string, limit: number,
   }
 }
 
-async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void> {
+/** Hard ceiling on consecutive tool-call rounds to prevent infinite agent loops. */
+const MAX_TOOL_ROUNDS = 25;
+
+/**
+ * Build a ToolExecutionContext from the current runtime state.
+ * Scoped to a single tool invocation -- one context per call keeps
+ * capability checks isolated and auditable.
+ */
+function buildToolContext(
+  capabilities: CapabilityManager,
+  cwd: string,
+): ToolExecutionContext {
+  return {
+    id: crypto.randomUUID(),
+    cwd,
+    capabilities: {
+      require: (cap, target) => capabilities.require(cap, target),
+    },
+  };
+}
+
+/**
+ * Execute a single tool call through the registry.
+ * Returns a serialized string suitable for the tool-result message content.
+ * Never throws -- errors are caught and returned as structured JSON so the
+ * agent can self-correct.
+ */
+async function executeToolCall(
+  registry: MemoryToolRegistry,
+  capabilities: CapabilityManager,
+  cwd: string,
+  toolCall: AgentToolCall,
+): Promise<string> {
+  let parsedArgs: unknown;
+  try {
+    parsedArgs = JSON.parse(toolCall.arguments);
+  } catch {
+    return JSON.stringify({ ok: false, error: `Invalid JSON arguments: ${toolCall.arguments}` });
+  }
+
+  try {
+    const ctx = buildToolContext(capabilities, cwd);
+    const result = await registry.run<ToolResult>(toolCall.name, parsedArgs, ctx);
+    return JSON.stringify(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return JSON.stringify({ ok: false, error: message });
+  }
+}
+
+/**
+ * Stream one agent turn, collecting text and tool calls.
+ * Renders output through the TuiRenderer for styled terminal display.
+ * Returns the final AgentResponse (which includes any tool_calls the agent made).
+ */
+async function streamAgentTurn(
+  agent: ReturnType<typeof createAgentFromEnv>,
+  messages: AgentMessage[],
+  runtime: AppRuntime,
+  currentTurn: string,
+  tui: TuiRenderer,
+): Promise<{ text: string; toolCalls: AgentToolCall[]; hadError: boolean }> {
+  const stream = await agent.stream({ messages });
+
+  let text = "";
+  const toolCalls: AgentToolCall[] = [];
+  let hadError = false;
+
+  for await (const event of stream.events) {
+    switch (event.type) {
+      case "token":
+        text += event.token;
+        tui.writeToken(event.token);
+        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "token", token: event.token });
+        break;
+
+      case "tool_call":
+        toolCalls.push(event.toolCall);
+        tui.writeToolCall(event.toolCall.name, event.toolCall.arguments);
+        await runtime.search.uiUpdate({
+          turnId: currentTurn,
+          kind: "tool_call",
+          message: `[tool_call ${event.toolCall.name}]`,
+          meta: { tool: event.toolCall.name },
+        });
+        break;
+
+      case "error":
+        tui.writeError(event.error);
+        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "error", message: event.error, done: true });
+        hadError = true;
+        break;
+
+      case "done":
+        text = event.response.text || text;
+        // Merge any tool calls that came in the done event but weren't streamed individually
+        for (const tc of event.response.toolCalls) {
+          if (!toolCalls.some((existing) => existing.id === tc.id && existing.name === tc.name)) {
+            toolCalls.push(tc);
+          }
+        }
+        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "done", done: true });
+        break;
+    }
+
+    if (event.type === "error" || event.type === "done") {
+      break;
+    }
+  }
+
+  await stream.cancel();
+  return { text, toolCalls, hadError };
+}
+
+/**
+ * Build the assistant message that records a tool-calling turn.
+ * Includes the wire-format tool_calls array so subsequent API calls
+ * can correlate tool results with their originating requests.
+ */
+function buildAssistantToolCallMessage(
+  text: string,
+  toolCalls: AgentToolCall[],
+): AgentMessage {
+  return {
+    role: "assistant",
+    content: text || null,
+    tool_calls: toolCalls.map((tc) => ({
+      id: tc.id ?? crypto.randomUUID(),
+      type: "function" as const,
+      function: { name: tc.name, arguments: tc.arguments },
+    })),
+  };
+}
+
+/**
+ * Build a tool-result message for a single tool call.
+ */
+function buildToolResultMessage(toolCallId: string, resultContent: string): AgentMessage {
+  return {
+    role: "tool",
+    content: resultContent,
+    tool_call_id: toolCallId,
+  };
+}
+
+async function runInteractive(
+  runtime: AppRuntime,
+  registry: MemoryToolRegistry,
+  capabilities: CapabilityManager,
+  json: boolean,
+): Promise<void> {
+  const tui = new TuiRenderer();
+
   const iface = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
-    prompt: "pi> ",
+    prompt: tui.promptString(),
   });
 
   const root = await runtime.sessionTree.createRoot("system", "interactive session");
   let currentTurn = root.id;
   const agent = createAgentFromEnv();
+  const cwd = process.cwd();
 
-  process.stdout.write("pi-zig-bun interactive\n");
-  process.stdout.write("Type /help for commands.\n");
+  tui.writeBanner();
 
   for await (const line of iface) {
     const trimmed = line.trim();
@@ -124,49 +280,82 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
       continue;
     }
 
+    // ---- Begin agent turn with tool-call loop ----
     const userTurn = await runtime.sessionTree.fork(currentTurn, "user", trimmed);
     currentTurn = userTurn.id;
     await runtime.search.uiInput({ turnId: currentTurn, text: trimmed, metadata: { source: "interactive" } });
 
     const history = await runtime.sessionTree.history(currentTurn);
-    const stream = await agent.stream({ messages: toAgentMessages(history) });
+    const messages: AgentMessage[] = toAgentMessages(history);
 
-    let assistantText = "";
-    const inBandToolCalls: string[] = [];
-    process.stdout.write("assistant> ");
+    tui.startThinking();
 
-    for await (const event of stream.events) {
-      if (event.type === "token") {
-        assistantText += event.token;
-        process.stdout.write(event.token);
-        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "token", token: event.token });
+    let round = 0;
+    let lastText = "";
+    let isFirstRound = true;
+
+    while (round < MAX_TOOL_ROUNDS) {
+      round++;
+
+      if (isFirstRound) {
+        // Stop spinner before first streaming output; spinner cleanup writes to the same line
+        tui.stopThinking();
+        tui.writeAssistantPrefix();
+        isFirstRound = false;
+      } else {
+        tui.writeAssistantPrefix();
       }
 
-      if (event.type === "tool_call") {
-        const inBand = `\n[tool_call ${event.toolCall.name}] ${event.toolCall.arguments}`;
-        inBandToolCalls.push(inBand);
-        process.stdout.write(inBand);
-        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "tool_call", message: inBand, meta: { tool: event.toolCall.name } });
-      }
+      const turn = await streamAgentTurn(agent, messages, runtime, currentTurn, tui);
 
-      if (event.type === "error") {
-        process.stdout.write(`\n[agent error] ${event.error}\n`);
-        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "error", message: event.error, done: true });
+      if (turn.hadError) {
+        lastText = turn.text;
         break;
       }
 
-      if (event.type === "done") {
-        assistantText = event.response.text || assistantText;
-        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "done", done: true });
+      // No tool calls -- agent is done, final text response
+      if (turn.toolCalls.length === 0) {
+        lastText = turn.text;
         break;
       }
+
+      // Agent requested tool calls -- execute each one and feed results back
+      const assistantMsg = buildAssistantToolCallMessage(turn.text, turn.toolCalls);
+      messages.push(assistantMsg);
+
+      for (const tc of turn.toolCalls) {
+        const toolCallId = assistantMsg.tool_calls!.find(
+          (w) => w.function.name === tc.name && w.function.arguments === tc.arguments,
+        )!.id;
+
+        tui.writeToolExecution(tc.name);
+        const resultContent = await executeToolCall(registry, capabilities, cwd, tc);
+        tui.writeToolExecutionDone();
+
+        const toolResultMsg = buildToolResultMessage(toolCallId, resultContent);
+        messages.push(toolResultMsg);
+
+        await runtime.search.uiUpdate({
+          turnId: currentTurn,
+          kind: "tool_call",
+          message: `[tool_result ${tc.name}] ${resultContent.slice(0, 200)}`,
+          meta: { tool: tc.name, result: resultContent.slice(0, 500) },
+        });
+      }
+
+      tui.writeNewline();
+      // Loop continues: re-call agent with updated messages including tool results
     }
-    await stream.cancel();
 
-    const finalAssistant = `${assistantText}${inBandToolCalls.length > 0 ? `\n${inBandToolCalls.join("\n")}` : ""}`.trim();
-    const assistantTurn = await runtime.sessionTree.fork(currentTurn, "assistant", finalAssistant);
+    if (round >= MAX_TOOL_ROUNDS) {
+      tui.writeError(`tool-call loop hit ceiling (${MAX_TOOL_ROUNDS} rounds)`);
+    }
+
+    // Persist the final assistant text into the session tree
+    const finalText = lastText.trim() || "(tool-only response)";
+    const assistantTurn = await runtime.sessionTree.fork(currentTurn, "assistant", finalText);
     currentTurn = assistantTurn.id;
-    process.stdout.write("\n");
+    tui.writeNewline();
     iface.prompt();
   }
 
@@ -255,7 +444,7 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
       return 0;
     case "interactive":
     default: {
-      await runInteractive(runtime, args.json);
+      await runInteractive(runtime, registry, capabilities, args.json);
       return 0;
     }
   }

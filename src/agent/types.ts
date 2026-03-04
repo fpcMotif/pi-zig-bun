@@ -1,6 +1,22 @@
 export interface AgentMessage {
   role: "system" | "user" | "assistant" | "tool";
-  content: string;
+  content: string | null;
+
+  /**
+   * Present on assistant messages that requested tool calls.
+   * Wire format matches OpenAI: { id, type: "function", function: { name, arguments } }
+   */
+  tool_calls?: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+  }>;
+
+  /**
+   * Present on tool-result messages (role === "tool").
+   * References the originating tool_call id so the LLM can correlate results.
+   */
+  tool_call_id?: string;
 }
 
 export interface AgentToolCall {

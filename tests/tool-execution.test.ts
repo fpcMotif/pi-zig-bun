@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile, readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { readTool, writeTool, editTool, bashTool } from "../src/tools/builtin";
-import { MemoryToolRegistry } from "../src/tools/types";
+import { MemoryToolRegistry, type Tool } from "../src/tools/types";
 import type { ToolExecutionContext } from "../src/tools/types";
 import { CapabilityManager } from "../src/permissions";
 import type { ToolResult } from "../src/permissions";
@@ -222,8 +222,8 @@ describe("MemoryToolRegistry", () => {
 
   test("registers tools and lists them", () => {
     const registry = new MemoryToolRegistry();
-    registry.register(readTool);
-    registry.register(writeTool);
+    registry.register(readTool as Tool);
+    registry.register(writeTool as Tool);
 
     const tools = registry.list();
     expect(tools.map((t) => t.id).sort()).toEqual(["read", "write"]);
@@ -231,7 +231,7 @@ describe("MemoryToolRegistry", () => {
 
   test("run() executes a registered tool and returns its result", async () => {
     const registry = new MemoryToolRegistry();
-    registry.register(writeTool);
+    registry.register(writeTool as Tool);
 
     const filePath = path.join(tmpDir, "registry-test.txt");
     const result = await registry.run<ToolResult>(
@@ -255,7 +255,7 @@ describe("MemoryToolRegistry", () => {
 
   test("run() enforces capability checks before executing the tool", async () => {
     const registry = new MemoryToolRegistry();
-    registry.register(readTool);
+    registry.register(readTool as Tool);
 
     // Create a capability manager that denies fs.read
     const restrictedManager = new CapabilityManager({});
@@ -271,7 +271,7 @@ describe("MemoryToolRegistry", () => {
 
   test("run() passes the path from input to capability check", async () => {
     const registry = new MemoryToolRegistry();
-    registry.register(readTool);
+    registry.register(readTool as Tool);
 
     // Allow reads only under a specific directory
     const allowedDir = path.join(tmpDir, "allowed");

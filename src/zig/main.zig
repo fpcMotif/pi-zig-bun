@@ -382,7 +382,7 @@ fn hashWorkspace(root: []const u8) u64 {
     return hasher.final();
 }
 
-fn buildCacheDir(allocator: Allocator, root: []const u8) ![]u8 {
+fn buildCacheDir(allocator: Allocator, root: []const u8) ![]const u8 {
     var hash_buf: [16]u8 = undefined;
     const hash_text = try std.fmt.bufPrint(&hash_buf, "{x}", .{hashWorkspace(root)});
     const home = std.process.getEnvVarOwned(allocator, "HOME") catch try allocator.dupe(u8, ".");
