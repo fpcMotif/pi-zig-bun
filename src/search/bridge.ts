@@ -1,3 +1,4 @@
+import type { UiAck, UiInputParams, UiUpdateParams } from "../rpc/types";
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
@@ -203,6 +204,14 @@ export class SearchBridge {
     }
   }
 
+
+  public async uiUpdate(params: UiUpdateParams): Promise<UiAck> {
+    return this.call<UiAck>("ui.update", params);
+  }
+
+  public async uiInput(params: UiInputParams): Promise<UiAck> {
+    return this.call<UiAck>("ui.input", params);
+  }
   public async call<T>(method: string, params: unknown = undefined): Promise<T> {
     if (this.started) {
       await this.stop();

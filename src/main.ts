@@ -6,8 +6,9 @@ import { parseCli, usage } from "./cli";
 import { SessionStore, SessionTree } from "./session/tree";
 import { MemoryToolRegistry, type Tool } from "./tools/types";
 import { builtinTools } from "./tools/builtin";
-import { CapabilityManager, type ToolResult } from "./permissions";
+import { CapabilityManager } from "./permissions";
 import { loadSkills } from "./extensions/loader";
+import { createAgentFromEnv, type AgentMessage } from "./agent";
 
 interface AppRuntime {
   search: SearchClient;
@@ -19,6 +20,12 @@ function registerBuiltinTools(registry: MemoryToolRegistry): void {
   for (const tool of builtinTools) {
     registry.register(tool as Tool);
   }
+}
+
+function toAgentMessages(turns: Awaited<ReturnType<SessionTree["history"]>>): AgentMessage[] {
+  return turns
+    .filter((turn) => turn.role === "system" || turn.role === "user" || turn.role === "assistant")
+    .map((turn) => ({ role: turn.role, content: turn.content }));
 }
 
 async function runSearchCommand(runtime: AppRuntime, query: string, limit: number, json: boolean): Promise<void> {
@@ -65,6 +72,7 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
 
   const root = await runtime.sessionTree.createRoot("system", "interactive session");
   let currentTurn = root.id;
+  const agent = createAgentFromEnv();
 
   process.stdout.write("pi-zig-bun interactive\n");
   process.stdout.write("Type /help for commands.\n");
@@ -116,8 +124,49 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
       continue;
     }
 
-    console.log("Unsupported command. Use /help for supported commands.");
-    currentTurn = (await runtime.sessionTree.fork(currentTurn, "user", trimmed)).id;
+    const userTurn = await runtime.sessionTree.fork(currentTurn, "user", trimmed);
+    currentTurn = userTurn.id;
+    await runtime.search.uiInput({ turnId: currentTurn, text: trimmed, metadata: { source: "interactive" } });
+
+    const history = await runtime.sessionTree.history(currentTurn);
+    const stream = await agent.stream({ messages: toAgentMessages(history) });
+
+    let assistantText = "";
+    const inBandToolCalls: string[] = [];
+    process.stdout.write("assistant> ");
+
+    for await (const event of stream.events) {
+      if (event.type === "token") {
+        assistantText += event.token;
+        process.stdout.write(event.token);
+        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "token", token: event.token });
+      }
+
+      if (event.type === "tool_call") {
+        const inBand = `\n[tool_call ${event.toolCall.name}] ${event.toolCall.arguments}`;
+        inBandToolCalls.push(inBand);
+        process.stdout.write(inBand);
+        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "tool_call", message: inBand, meta: { tool: event.toolCall.name } });
+      }
+
+      if (event.type === "error") {
+        process.stdout.write(`\n[agent error] ${event.error}\n`);
+        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "error", message: event.error, done: true });
+        break;
+      }
+
+      if (event.type === "done") {
+        assistantText = event.response.text || assistantText;
+        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "done", done: true });
+        break;
+      }
+    }
+    await stream.cancel();
+
+    const finalAssistant = `${assistantText}${inBandToolCalls.length > 0 ? `\n${inBandToolCalls.join("\n")}` : ""}`.trim();
+    const assistantTurn = await runtime.sessionTree.fork(currentTurn, "assistant", finalAssistant);
+    currentTurn = assistantTurn.id;
+    process.stdout.write("\n");
     iface.prompt();
   }
 

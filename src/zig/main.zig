@@ -341,6 +341,20 @@ const GrepMatch = struct {
     text: []const u8,
 };
 
+const UiUpdatePayload = struct {
+    ok: bool,
+    kind: []const u8,
+    turn_id: []const u8,
+    received_at_ms: i64,
+};
+
+const UiInputPayload = struct {
+    ok: bool,
+    turn_id: []const u8,
+    text: []const u8,
+    received_at_ms: i64,
+};
+
 fn trimSpace(value: []const u8) []const u8 {
     var start: usize = 0;
     while (start < value.len and (value[start] == ' ' or value[start] == '\t' or value[start] == '\r' or value[start] == '\n')) {
@@ -1142,6 +1156,37 @@ fn handleRequest(
             allocator.free(match.text);
         }
         allocator.free(matches);
+        return;
+    }
+
+
+    if (std.mem.eql(u8, method_value.string, "ui.update")) {
+        const params: ?std.json.ObjectMap = if (object.get("params")) |value| switch (value) {
+            .object => value.object,
+            else => null,
+        } else null;
+        const payload = UiUpdatePayload{
+            .ok = true,
+            .kind = if (params) |p| getString(p, "kind") orelse "status" else "status",
+            .turn_id = if (params) |p| getString(p, "turnId") orelse "" else "",
+            .received_at_ms = std.time.milliTimestamp(),
+        };
+        try writeResult(writer, id, payload);
+        return;
+    }
+
+    if (std.mem.eql(u8, method_value.string, "ui.input")) {
+        const params: ?std.json.ObjectMap = if (object.get("params")) |value| switch (value) {
+            .object => value.object,
+            else => null,
+        } else null;
+        const payload = UiInputPayload{
+            .ok = true,
+            .turn_id = if (params) |p| getString(p, "turnId") orelse "" else "",
+            .text = if (params) |p| getString(p, "text") orelse "" else "",
+            .received_at_ms = std.time.milliTimestamp(),
+        };
+        try writeResult(writer, id, payload);
         return;
     }
 
