@@ -138,9 +138,9 @@
 | Command | Status | Notes |
 |---|---|---|
 | `pi` (interactive TUI) | **PARTIAL** | REPL exists, not TUI |
-| `pi -p "query"` (one-shot) | **NOT DONE** | `-p` flag not in CLI parser |
-| `pi --json "query"` | **PARTIAL** | `--json` works only with subcommands |
-| `pi /login` | **NOT DONE** | No auth system |
+| `pi -p "query"` (one-shot) | **DONE** | `-p`/`--prompt` now routes to one-shot prompt/query execution |
+| `pi --json "query"` | **DONE** | `--json` now supports one-shot prompt/query execution as well as subcommands |
+| `pi /login` | **DONE** | Adds provider credential validation + local `.pi/config.json` write flow |
 | `pi /tree` | **DONE** | Works |
 | `pi search <query>` | **DONE** | Works |
 
