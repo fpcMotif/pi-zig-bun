@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, appendFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { SessionStore, SessionTree } from "../src/session/tree";
@@ -60,6 +60,49 @@ describe("SessionTree invariants", () => {
       expect(stats.turns).toBe(3);
       const secondHistory = await tree.history(secondRoot.id);
       expect(secondHistory).toHaveLength(1);
+    });
+  });
+
+  test("throws error when branching from non-existent turn", async () => {
+    await withTempWorkspace(async (root) => {
+      const tree = new SessionTree(new SessionStore(root));
+      await expect(tree.fork("non-existent-id", "user", "hello")).rejects.toThrow("Parent session turn not found: non-existent-id");
+    });
+  });
+
+  test("can get a specific turn by ID", async () => {
+    await withTempWorkspace(async (root) => {
+      const store = new SessionStore(root);
+      const tree = new SessionTree(store);
+
+      const rootTurn = await tree.createRoot("system", "root");
+      const userTurn = await tree.fork(rootTurn.id, "user", "hello");
+
+      const foundTurn = await store.getTurn(userTurn.id);
+      expect(foundTurn).toBeDefined();
+      expect(foundTurn?.id).toBe(userTurn.id);
+      expect(foundTurn?.content).toBe("hello");
+
+      const missingTurn = await store.getTurn("non-existent-id");
+      expect(missingTurn).toBeUndefined();
+    });
+  });
+
+  test("safely ignores malformed JSON in storage file", async () => {
+    await withTempWorkspace(async (root) => {
+      const store = new SessionStore(root);
+      const tree = new SessionTree(store);
+
+      const rootTurn = await tree.createRoot("system", "root");
+
+      // Manually append a malformed line
+      const filePath = path.join(root, ".pi", "sessions.jsonl");
+      await appendFile(filePath, "this is not valid json\n", "utf8");
+
+      // Should still be able to get turns despite the malformed line
+      const allTurns = await store.allTurns();
+      expect(allTurns.length).toBe(1);
+      expect(allTurns[0].id).toBe(rootTurn.id);
     });
   });
 });
