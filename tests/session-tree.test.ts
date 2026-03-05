@@ -13,6 +13,93 @@ async function withTempWorkspace<T>(run: (root: string) => Promise<T>): Promise<
   }
 }
 
+describe("SessionStore", () => {
+  test("creates store directory and file on first access", async () => {
+    await withTempWorkspace(async (root) => {
+      const store = new SessionStore(root);
+      // Ensure it doesn't exist yet
+      const filePath = path.join(root, ".pi", "sessions.jsonl");
+      await expect(import("node:fs/promises").then(fs => fs.access(filePath))).rejects.toThrow();
+
+      // Accessing allTurns should create the file
+      const turns = await store.allTurns();
+      expect(turns).toEqual([]);
+
+      // Now it should exist
+      await import("node:fs/promises").then(fs => fs.access(filePath)); // Will throw if not found
+    });
+  });
+
+  test("ignores malformed JSON lines during deserialization", async () => {
+    await withTempWorkspace(async (root) => {
+      const store = new SessionStore(root);
+      const filePath = path.join(root, ".pi", "sessions.jsonl");
+
+      // We need to create the directory first
+      await import("node:fs/promises").then(fs => fs.mkdir(path.dirname(filePath), { recursive: true }));
+
+      const validTurn = JSON.stringify({
+        id: "1", parentId: null, rootId: "1", role: "user", content: "hello", createdAt: new Date().toISOString()
+      });
+
+      const fileContent = `
+${validTurn}
+this is not valid json
+{"id": "2", "parentId": "1", "rootId": "1", "role": "assistant", "content": "hi", "createdAt": "${new Date().toISOString()}"}
+      `.trim();
+
+      await import("node:fs/promises").then(fs => fs.writeFile(filePath, fileContent, "utf8"));
+
+      const turns = await store.allTurns();
+      expect(turns).toHaveLength(2);
+      expect(turns[0].id).toBe("1");
+      expect(turns[1].id).toBe("2");
+    });
+  });
+
+  test("throws when appending to non-existent parent", async () => {
+    await withTempWorkspace(async (root) => {
+      const store = new SessionStore(root);
+      await expect(store.appendTurn("non-existent-id", "user", "hello")).rejects.toThrow("Parent session turn not found: non-existent-id");
+    });
+  });
+
+  test("retrieves a specific turn by id", async () => {
+    await withTempWorkspace(async (root) => {
+      const store = new SessionStore(root);
+      const rootTurn = store.createRootTurn("system", "root content");
+      await store.addTurn(rootTurn);
+
+      const retrieved = await store.getTurn(rootTurn.id);
+      expect(retrieved).toEqual(rootTurn);
+
+      const notFound = await store.getTurn("non-existent");
+      expect(notFound).toBeUndefined();
+    });
+  });
+
+  test("persists turns across store instances", async () => {
+    await withTempWorkspace(async (root) => {
+      // First instance
+      const store1 = new SessionStore(root);
+      const rootTurn = store1.createRootTurn("system", "root content");
+      await store1.addTurn(rootTurn);
+      const childTurn = await store1.appendTurn(rootTurn.id, "user", "child content");
+
+      // Second instance on the same root
+      const store2 = new SessionStore(root);
+      const turns = await store2.allTurns();
+
+      expect(turns).toHaveLength(2);
+      expect(turns[0].id).toBe(rootTurn.id);
+      expect(turns[1].id).toBe(childTurn.id);
+
+      const retrievedChild = await store2.getTurn(childTurn.id);
+      expect(retrievedChild?.content).toBe("child content");
+    });
+  });
+});
+
 describe("SessionTree invariants", () => {
   test("root creation, fork lineage, and history ordering", async () => {
     await withTempWorkspace(async (root) => {
