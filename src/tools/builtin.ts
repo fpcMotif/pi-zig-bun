@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { stat, readFile } from "node:fs/promises";
 import path from "node:path";
 import { execSync } from "node:child_process";
 import type { Tool, ToolExecutionContext } from "./types";
@@ -24,7 +25,7 @@ export const readTool: Tool<{ path: string }, ToolResult> = {
     const resolved = readPath(ctx, input);
     ctx.capabilities.require("fs.read", resolved);
 
-    const stats = statSync(resolved);
+    const stats = await stat(resolved);
     if (stats.size > MAX_READ_BYTES) {
       return {
         ok: false,
@@ -32,7 +33,7 @@ export const readTool: Tool<{ path: string }, ToolResult> = {
       };
     }
 
-    const data = readFileSync(resolved);
+    const data = await readFile(resolved);
     return {
       ok: true,
       output: data.toString("utf8"),
