@@ -11,7 +11,11 @@ function readPath(ctx: ToolExecutionContext, input: unknown): string {
   if (!value || typeof value !== "string") {
     throw new Error("Tool input requires a path string");
   }
-  const resolved = path.isAbsolute(value) ? value : path.join(ctx.cwd, value);
+  const resolved = path.resolve(ctx.cwd, value);
+  const rel = path.relative(ctx.cwd, resolved);
+  if (rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel)) {
+    throw new Error("Path traversal is not allowed");
+  }
   return resolved;
 }
 

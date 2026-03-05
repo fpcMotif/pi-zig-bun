@@ -72,6 +72,12 @@ describe("readTool", () => {
   test("throws when the path argument is missing", async () => {
     expect(() => readTool.execute(makeCtx(tmpDir), {} as any)).toThrow("path");
   });
+
+  test("rejects path traversal outside cwd", async () => {
+    await expect(readTool.execute(makeCtx(tmpDir), { path: "../../../etc/passwd" })).rejects.toThrow("Path traversal is not allowed");
+    await expect(readTool.execute(makeCtx(tmpDir), { path: "/etc/passwd" })).rejects.toThrow("Path traversal is not allowed");
+    await expect(readTool.execute(makeCtx(tmpDir), { path: path.join(tmpDir, "../outside.txt") })).rejects.toThrow("Path traversal is not allowed");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -110,6 +116,11 @@ describe("writeTool", () => {
     expect(result.ok).toBe(true);
     const ondisk = await readFile(filePath, "utf8");
     expect(ondisk).toBe("deep");
+  });
+
+  test("rejects path traversal outside cwd", async () => {
+    await expect(writeTool.execute(makeCtx(tmpDir), { path: "../../../etc/passwd", content: "hacked" })).rejects.toThrow("Path traversal is not allowed");
+    await expect(writeTool.execute(makeCtx(tmpDir), { path: "/etc/passwd", content: "hacked" })).rejects.toThrow("Path traversal is not allowed");
   });
 });
 
@@ -166,6 +177,11 @@ describe("editTool", () => {
     expect(() =>
       editTool.execute(makeCtx(tmpDir), { path: filePath } as any),
     ).toThrow("edit requires");
+  });
+
+  test("rejects path traversal outside cwd", async () => {
+    await expect(editTool.execute(makeCtx(tmpDir), { path: "../../../etc/passwd", from: "a", to: "b" })).rejects.toThrow("Path traversal is not allowed");
+    await expect(editTool.execute(makeCtx(tmpDir), { path: "/etc/passwd", from: "a", to: "b" })).rejects.toThrow("Path traversal is not allowed");
   });
 });
 
