@@ -5,12 +5,15 @@ export interface SearchFileResultItem {
   rank: number;
 }
 
-export interface SearchFilesResponse {
+export interface BaseSearchResponse {
   query: string;
   total: number;
-  offset: number;
-  limit: number;
   elapsedMs: number;
+  limit: number;
+}
+
+export interface SearchFilesResponse extends BaseSearchResponse {
+  offset: number;
   results: SearchFileResultItem[];
 }
 
@@ -22,10 +25,6 @@ export interface SearchGrepResultItem {
   text: string;
 }
 
-export interface SearchGrepResponse {
-  query: string;
-  total: number;
-  elapsedMs: number;
-  limit: number;
+export interface SearchGrepResponse extends BaseSearchResponse {
   matches: SearchGrepResultItem[];
 }

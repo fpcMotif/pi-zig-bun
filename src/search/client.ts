@@ -78,14 +78,7 @@ export class SearchClient {
       proximityWeight: options.proximityWeight,
     };
 
-    const response = await this.bridge.call<{
-      query: string;
-      total: number;
-      offset: number;
-      limit: number;
-      elapsedMs: number;
-      results: SearchFileResultItem[];
-    }>("search.files", Object.fromEntries(Object.entries(params).filter((entry) => entry[1] !== undefined)));
+    const response = await this.bridge.call<SearchFilesResponse>("search.files", Object.fromEntries(Object.entries(params).filter((entry) => entry[1] !== undefined)));
 
     return response;
   }
@@ -103,13 +96,7 @@ export class SearchClient {
       maxTypos: options.maxTypos,
     };
 
-    const response = await this.bridge.call<{
-      query: string;
-      total: number;
-      elapsedMs: number;
-      limit: number;
-      matches: SearchGrepResultItem[];
-    }>("search.grep", params);
+    const response = await this.bridge.call<SearchGrepResponse>("search.grep", params);
 
     return response;
   }
