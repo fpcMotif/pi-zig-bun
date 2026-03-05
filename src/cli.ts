@@ -23,6 +23,45 @@ function normalizeCommand(raw: string): ParsedCli["command"] {
   }
 }
 
+function parseFlag(token: string, args: string[], i: number, options: ParsedCli): number {
+  switch (token) {
+    case "-h":
+    case "--help":
+      options.help = true;
+      return 1;
+    case "-j":
+    case "--json":
+      options.json = true;
+      return 1;
+    case "-c":
+    case "--cwd":
+      if (args[i + 1] === undefined) {
+        throw new Error(`Missing value for ${token}`);
+      }
+      options.cwd = args[i + 1]!;
+      return 2;
+    case "-l":
+    case "--limit":
+      if (args[i + 1] === undefined) {
+        throw new Error(`Missing value for ${token}`);
+      }
+      options.limit = Number.parseInt(args[i + 1]!, 10);
+      if (!Number.isFinite(options.limit) || options.limit <= 0) {
+        options.limit = 50;
+      }
+      return 2;
+    case "-r":
+    case "--root-session":
+      if (args[i + 1] === undefined) {
+        throw new Error(`Missing value for ${token}`);
+      }
+      options.rootSession = args[i + 1]!;
+      return 2;
+    default:
+      return 1;
+  }
+}
+
 export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
   let command: ParsedCli["command"];
   let i = 0;
@@ -46,47 +85,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
       continue;
     }
 
-    switch (token) {
-      case "-h":
-      case "--help":
-        options.help = true;
-        i += 1;
-        continue;
-      case "-j":
-      case "--json":
-        options.json = true;
-        i += 1;
-        continue;
-      case "-c":
-      case "--cwd":
-        if (args[i + 1] === undefined) {
-          throw new Error(`Missing value for ${token}`);
-        }
-        options.cwd = args[i + 1]!;
-        i += 2;
-        continue;
-      case "-l":
-      case "--limit":
-        if (args[i + 1] === undefined) {
-          throw new Error(`Missing value for ${token}`);
-        }
-        options.limit = Number.parseInt(args[i + 1]!, 10);
-        if (!Number.isFinite(options.limit) || options.limit <= 0) {
-          options.limit = 50;
-        }
-        i += 2;
-        continue;
-      case "-r":
-      case "--root-session":
-        if (args[i + 1] === undefined) {
-          throw new Error(`Missing value for ${token}`);
-        }
-        options.rootSession = args[i + 1]!;
-        i += 2;
-        continue;
-      default:
-        i += 1;
-    }
+    i += parseFlag(token, args, i, options);
   }
 
   options.command = options.help ? "help" : command ?? "interactive";
