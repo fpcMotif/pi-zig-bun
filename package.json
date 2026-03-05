@@ -15,7 +15,8 @@
     "ci": "bun run validate && bun run test && bun run test:zig && zig build && bun run ci:search-regression && bun run ci:perf && bun run ci:requirements-coverage"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "^1.3.10",
+    "@types/node": "^25.3.3"
   },
   "peerDependencies": {
     "typescript": "^5"
