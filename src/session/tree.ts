@@ -1,4 +1,4 @@
-import { mkdir, access } from "node:fs/promises";
+import { mkdir, access, stat } from "node:fs/promises";
 import { appendFile, readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -26,6 +26,8 @@ const SESSION_FILE = "sessions.jsonl";
 
 export class SessionStore {
   private filePath: string;
+  private cachedTurns: SessionTurn[] | null = null;
+  private lastFileStats: { size: number; mtimeMs: number } | null = null;
 
   constructor(private readonly workspaceRoot: string) {
     this.filePath = path.join(workspaceRoot, ".pi", SESSION_FILE);
@@ -55,13 +57,27 @@ export class SessionStore {
 
   public async allTurns(): Promise<SessionTurn[]> {
     await this.ensureStore();
+    const stats = await stat(this.filePath);
+
+    if (this.cachedTurns && this.lastFileStats && stats.size === this.lastFileStats.size && stats.mtimeMs === this.lastFileStats.mtimeMs) {
+        return this.cachedTurns;
+    }
+
     const content = await readFile(this.filePath, "utf8");
-    return this.deserialize(content);
+    this.cachedTurns = this.deserialize(content);
+    this.lastFileStats = { size: stats.size, mtimeMs: stats.mtimeMs };
+    return this.cachedTurns;
   }
 
   public async addTurn(turn: SessionTurn): Promise<void> {
     await this.ensureStore();
     await appendFile(this.filePath, `${JSON.stringify(turn)}\n`, "utf8");
+
+    if (this.cachedTurns) {
+        this.cachedTurns.push(turn);
+        const stats = await stat(this.filePath);
+        this.lastFileStats = { size: stats.size, mtimeMs: stats.mtimeMs };
+    }
   }
 
   public createRootTurn(role: SessionTurn["role"], content: string): SessionTurn {
