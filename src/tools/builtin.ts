@@ -11,7 +11,14 @@ function readPath(ctx: ToolExecutionContext, input: unknown): string {
   if (!value || typeof value !== "string") {
     throw new Error("Tool input requires a path string");
   }
-  const resolved = path.isAbsolute(value) ? value : path.join(ctx.cwd, value);
+
+  const resolved = path.resolve(ctx.cwd, value);
+  const normalizedCwd = path.resolve(ctx.cwd);
+
+  if (resolved !== normalizedCwd && !resolved.startsWith(normalizedCwd + path.sep)) {
+    throw new Error("Path traversal detected: target path is outside the current working directory");
+  }
+
   return resolved;
 }
 

@@ -72,6 +72,18 @@ describe("readTool", () => {
   test("throws when the path argument is missing", async () => {
     expect(() => readTool.execute(makeCtx(tmpDir), {} as any)).toThrow("path");
   });
+
+  test("prevents path traversal outside cwd (relative)", async () => {
+    const maliciousPath = path.join("..", "..", "..", "etc", "passwd");
+    expect(() => readTool.execute(makeCtx(tmpDir), { path: maliciousPath }))
+      .toThrow("Path traversal detected");
+  });
+
+  test("prevents path traversal outside cwd (absolute)", async () => {
+    const maliciousPath = "/etc/passwd";
+    expect(() => readTool.execute(makeCtx(tmpDir), { path: maliciousPath }))
+      .toThrow("Path traversal detected");
+  });
 });
 
 // ---------------------------------------------------------------------------
