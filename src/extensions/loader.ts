@@ -1,6 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { watch, type FSWatcher } from "node:fs";
-import path from "node:path";
+import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionLoaderResult, SkillContext, SkillModule } from "./types";
 import type { ToolRegistry, Tool } from "../tools/types";
@@ -47,7 +47,7 @@ export async function loadSkills(
           continue;
         }
 
-        const fullPath = path.join(root, entry.name);
+        const fullPath = join(root, entry.name);
         const moduleUrl = pathToFileURL(fullPath).href;
 
         try {
@@ -153,7 +153,7 @@ export function watchSkills(
         if (stopped) return;
         if (!filename || !filename.endsWith(".ts")) return;
 
-        const fullPath = path.join(root, filename);
+        const fullPath = join(root, filename);
 
         // Clear any pending timer for this exact file so we only fire once
         // per burst of events.
