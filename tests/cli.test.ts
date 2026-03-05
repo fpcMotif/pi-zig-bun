@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseCli } from "../src/cli";
+import { parseCli, usage } from "../src/cli";
 
 describe("parseCli", () => {
   test("parses search command and routes trailing tokens into query", () => {
@@ -30,5 +30,17 @@ describe("parseCli", () => {
     const parsed = parseCli(["--help", "search", "x"]);
     expect(parsed.help).toBe(true);
     expect(parsed.command).toBe("help");
+  });
+});
+
+describe("usage", () => {
+  test("returns the expected usage string", () => {
+    const output = usage();
+    expect(output).toContain("Usage:");
+    expect(output).toContain("Commands:");
+    expect(output).toContain("search <query>");
+    expect(output).toContain("grep <query>");
+    expect(output).toContain("Flags:");
+    expect(output).toContain("Interactive mode (default):");
   });
 });
