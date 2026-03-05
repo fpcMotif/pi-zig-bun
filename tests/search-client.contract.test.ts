@@ -2,6 +2,37 @@ import { describe, expect, test } from "bun:test";
 import { SearchClient } from "../src/search/client";
 
 describe("SearchClient contract", () => {
+  describe("from()", () => {
+    test("creates a client with default options", () => {
+      const client = SearchClient.from();
+      expect(client).toBeInstanceOf(SearchClient);
+
+      const workspace = (client as any).currentWorkspace;
+      expect(workspace).toBe(process.cwd());
+
+      const bridge = (client as any).bridge;
+      expect(bridge.workspaceRoot).toBe(process.cwd());
+    });
+
+    test("creates a client with provided options", () => {
+      const options = {
+        workspaceRoot: "/custom/workspace",
+        binaryPath: "/custom/bin/pi-zig-search",
+        requestTimeoutMs: 5000,
+      };
+      const client = SearchClient.from(options);
+      expect(client).toBeInstanceOf(SearchClient);
+
+      const workspace = (client as any).currentWorkspace;
+      expect(workspace).toBe("/custom/workspace");
+
+      const bridge = (client as any).bridge;
+      expect(bridge.workspaceRoot).toBe("/custom/workspace");
+      expect(bridge.binaryPath).toBe("/custom/bin/pi-zig-search");
+      expect(bridge.requestTimeoutMs).toBe(5000);
+    });
+  });
+
   test("issues expected bridge calls and returns typed responses", async () => {
     const calls: Array<{ method: string; params: unknown }> = [];
     const bridge = {
