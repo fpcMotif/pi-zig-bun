@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import type { Tool, ToolExecutionContext } from "./types";
 import type { ToolResult } from "../permissions";
 
@@ -108,15 +108,31 @@ export const bashTool: Tool<{ command: string }, ToolResult> = {
     }
 
     ctx.capabilities.require("fs.execute", ctx.cwd);
-    const output = execSync(command, {
+
+    const result = spawnSync("bash", ["-c", command], {
       cwd: ctx.cwd,
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
+      shell: false,
     });
+
+    if (result.error) {
+      return {
+        ok: false,
+        error: result.error.message,
+      };
+    }
+
+    if (result.status !== 0) {
+      return {
+        ok: false,
+        error: `Command failed with status ${result.status}\n${result.stderr}`,
+      };
+    }
 
     return {
       ok: true,
-      output,
+      output: result.stdout,
     };
   },
 };
