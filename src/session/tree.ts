@@ -26,6 +26,7 @@ const SESSION_FILE = "sessions.jsonl";
 
 export class SessionStore {
   private filePath: string;
+  private cachedTurns: SessionTurn[] | null = null;
 
   constructor(private readonly workspaceRoot: string) {
     this.filePath = path.join(workspaceRoot, ".pi", SESSION_FILE);
@@ -54,14 +55,22 @@ export class SessionStore {
   }
 
   public async allTurns(): Promise<SessionTurn[]> {
+    if (this.cachedTurns !== null) {
+      return this.cachedTurns;
+    }
+
     await this.ensureStore();
     const content = await readFile(this.filePath, "utf8");
-    return this.deserialize(content);
+    this.cachedTurns = this.deserialize(content);
+    return this.cachedTurns;
   }
 
   public async addTurn(turn: SessionTurn): Promise<void> {
     await this.ensureStore();
     await appendFile(this.filePath, `${JSON.stringify(turn)}\n`, "utf8");
+    if (this.cachedTurns !== null) {
+      this.cachedTurns.push(turn);
+    }
   }
 
   public createRootTurn(role: SessionTurn["role"], content: string): SessionTurn {
