@@ -62,4 +62,31 @@ describe("SessionTree invariants", () => {
       expect(secondHistory).toHaveLength(1);
     });
   });
+
+  test("getTurn retrieves an existing turn and undefined for a non-existent turn", async () => {
+    await withTempWorkspace(async (root) => {
+      const store = new SessionStore(root);
+      const tree = new SessionTree(store);
+
+      const rootTurn = await tree.createRoot("system", "root");
+
+      const retrievedTurn = await store.getTurn(rootTurn.id);
+      expect(retrievedTurn).toBeDefined();
+      expect(retrievedTurn?.id).toBe(rootTurn.id);
+      expect(retrievedTurn?.role).toBe(rootTurn.role);
+      expect(retrievedTurn?.content).toBe(rootTurn.content);
+
+      const nonExistentTurn = await store.getTurn("non-existent-id");
+      expect(nonExistentTurn).toBeUndefined();
+    });
+  });
+
+  test("forking from a non-existent parent throws an error", async () => {
+    await withTempWorkspace(async (root) => {
+      const store = new SessionStore(root);
+      const tree = new SessionTree(store);
+
+      await expect(tree.fork("non-existent-id", "user", "should fail")).rejects.toThrow();
+    });
+  });
 });
