@@ -9,13 +9,13 @@ async function makeWorkspace() {
   const binDir = path.join(root, "zig-out", "bin");
   await mkdir(binDir, { recursive: true });
 
-  const binaryPath = path.join(binDir, "pi-zig-search");
+  const binaryName = process.platform === "win32" ? "pi-zig-search.exe" : "pi-zig-search";
+  const binaryPath = path.join(binDir, binaryName);
   await writeFile(binaryPath, `#!/usr/bin/env node
-let raw = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => { raw += chunk; });
-process.stdin.on("end", () => {
-  const req = JSON.parse(raw.trim());
+import readline from "node:readline";
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on("line", (line) => {
+  const req = JSON.parse(line);
   const method = req.method;
   const params = req.params ?? {};
   let result;
@@ -64,6 +64,11 @@ async function runOrThrow(args: string[], workspaceRoot: string): Promise<number
 
 describe("e2e smoke: search + grep + tree", () => {
   test("run() executes command flows against bridge", async () => {
+    // For local tests to pick up the test fake, process.cwd() may be used by the bridge resolution logic.
+    // The bridge searches workspaceRoot/zig-out/bin/pi-zig-search, process.cwd()/zig-out/bin/..., etc.
+    // Since makeWorkspace sets up the mock in root/zig-out/bin, and we pass ctx.root as cwd to runOrThrow,
+    // the bridge should find the binary at ctx.root/zig-out/bin/pi-zig-search.
+
     const ctx = await makeWorkspace();
     const logSpy = mock(() => {});
     const errSpy = mock(() => {});

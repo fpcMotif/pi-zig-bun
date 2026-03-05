@@ -31,7 +31,6 @@ interface PendingCall {
 }
 
 export interface SearchBridgeOptions {
-  binaryPath?: string;
   workspaceRoot?: string;
   requestTimeoutMs?: number;
 }
@@ -49,14 +48,10 @@ export class SearchBridge {
   constructor(options: SearchBridgeOptions = {}) {
     this.workspaceRoot = options.workspaceRoot ?? process.cwd();
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
-    this.binaryPath = this.resolveBinary(options.binaryPath);
+    this.binaryPath = this.resolveBinary();
   }
 
-  private resolveBinary(explicit?: string): string {
-    if (explicit) {
-      return explicit;
-    }
-
+  private resolveBinary(): string {
     const binaryName = process.platform === "win32" ? "pi-zig-search.exe" : "pi-zig-search";
     const candidates = [
       path.join(this.workspaceRoot, "zig-out", "bin", binaryName),
@@ -70,7 +65,7 @@ export class SearchBridge {
       }
     }
 
-    // keep last candidate for nicer errors while still allowing explicit override.
+    // keep last candidate for nicer errors
     return candidates[0]!;
   }
 
@@ -84,7 +79,6 @@ export class SearchBridge {
         [
           `Zig search binary missing: ${this.binaryPath}`,
           "Run `zig build` before starting pi-zig-bun.",
-          "If you use a custom binary path, pass { binaryPath } when creating SearchBridge.",
         ].join(" "),
       );
     }

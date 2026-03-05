@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile, chmod } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, chmod, mkdir } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { SearchBridge } from "../src/search/bridge";
 
 async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash"): Promise<{ root: string; binaryPath: string }> {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-bridge-"));
-  const binaryPath = path.join(root, "fake-bridge.mjs");
+  const binDir = path.join(root, "zig-out", "bin");
+  await mkdir(binDir, { recursive: true });
+  const binaryName = process.platform === "win32" ? "pi-zig-search.exe" : "pi-zig-search";
+  const binaryPath = path.join(binDir, binaryName);
   const script = `#!/usr/bin/env node
 import readline from "node:readline";
 const mode = ${JSON.stringify(mode)};
@@ -32,7 +35,7 @@ rl.on("line", (line) => {
 describe("SearchBridge protocol behavior", () => {
   test("handles framed JSON-RPC responses", async () => {
     const fixture = await createFakeBridgeBinary("ok");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ workspaceRoot: fixture.root, requestTimeoutMs: 200 });
     try {
       const response = await bridge.call<{ method: string }>("search.files", { query: "abc" });
       expect(response.method).toBe("search.files");
@@ -44,7 +47,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("times out long-running requests", async () => {
     const fixture = await createFakeBridgeBinary("timeout");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 20 });
+    const bridge = new SearchBridge({ workspaceRoot: fixture.root, requestTimeoutMs: 20 });
     try {
       await expect(bridge.call("search.files", { query: "abc" })).rejects.toThrow("timed out");
     } finally {
@@ -56,7 +59,7 @@ describe("SearchBridge protocol behavior", () => {
   test("recovers after process crash on next call", async () => {
     const crashFixture = await createFakeBridgeBinary("crash");
     const okFixture = await createFakeBridgeBinary("ok");
-    const bridge = new SearchBridge({ binaryPath: crashFixture.binaryPath, workspaceRoot: crashFixture.root, requestTimeoutMs: 100 });
+    const bridge = new SearchBridge({ workspaceRoot: crashFixture.root, requestTimeoutMs: 100 });
     try {
       let crashed = false;
       try {
@@ -67,7 +70,7 @@ describe("SearchBridge protocol behavior", () => {
       }
       expect(crashed).toBe(true);
       await bridge.stop();
-      const recovered = new SearchBridge({ binaryPath: okFixture.binaryPath, workspaceRoot: okFixture.root, requestTimeoutMs: 100 });
+      const recovered = new SearchBridge({ workspaceRoot: okFixture.root, requestTimeoutMs: 100 });
       try {
         const response = await recovered.call<{ method: string }>("search.grep", { query: "abc" });
         expect(response.method).toBe("search.grep");
@@ -82,7 +85,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("enforces single-flight by rejecting interrupted concurrent call", async () => {
     const fixture = await createFakeBridgeBinary("timeout");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ workspaceRoot: fixture.root, requestTimeoutMs: 200 });
     try {
       const first = bridge.call("search.files", { query: "a" });
       const second = bridge.call("search.files", { query: "b" });
