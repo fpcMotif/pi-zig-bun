@@ -1,6 +1,7 @@
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import type { Tool, ToolExecutionContext } from "./types";
 import type { ToolResult } from "../permissions";
 
@@ -11,7 +12,12 @@ function readPath(ctx: ToolExecutionContext, input: unknown): string {
   if (!value || typeof value !== "string") {
     throw new Error("Tool input requires a path string");
   }
-  const resolved = path.isAbsolute(value) ? value : path.join(ctx.cwd, value);
+  const workspaceRoot = path.resolve(ctx.cwd);
+  const resolved = path.resolve(workspaceRoot, value);
+  const relative = path.relative(workspaceRoot, resolved);
+  if (path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`)) {
+    throw new Error("Path traversal detected");
+  }
   return resolved;
 }
 
@@ -24,7 +30,7 @@ export const readTool: Tool<{ path: string }, ToolResult> = {
     const resolved = readPath(ctx, input);
     ctx.capabilities.require("fs.read", resolved);
 
-    const stats = statSync(resolved);
+    const stats = await stat(resolved);
     if (stats.size > MAX_READ_BYTES) {
       return {
         ok: false,
@@ -32,7 +38,7 @@ export const readTool: Tool<{ path: string }, ToolResult> = {
       };
     }
 
-    const data = readFileSync(resolved);
+    const data = await readFile(resolved);
     return {
       ok: true,
       output: data.toString("utf8"),
@@ -108,15 +114,40 @@ export const bashTool: Tool<{ command: string }, ToolResult> = {
     }
 
     ctx.capabilities.require("fs.execute", ctx.cwd);
-    const output = execSync(command, {
+    const result = spawnSync("bash", ["-c", command], {
       cwd: ctx.cwd,
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
+      shell: false,
     });
+
+    if (result.error) {
+      return {
+        ok: false,
+        error: `bash execution failed: ${result.error.message}`,
+        output: result.stdout ?? "",
+        data: {
+          stderr: result.stderr ?? "",
+        },
+      };
+    }
+
+    if (result.status !== 0) {
+      return {
+        ok: false,
+        error: result.stderr.trim() || `bash exited with code ${result.status}`,
+        output: result.stdout ?? "",
+        data: {
+          exitCode: result.status,
+          signal: result.signal,
+          stderr: result.stderr ?? "",
+        },
+      };
+    }
 
     return {
       ok: true,
-      output,
+      output: result.stdout,
     };
   },
 };
