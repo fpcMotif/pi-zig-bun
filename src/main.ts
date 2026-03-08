@@ -324,7 +324,7 @@ async function runInteractive(
       messages.push(assistantMsg);
 
       for (const tc of turn.toolCalls) {
-        const toolCallId = assistantMsg.tool_calls!.find(
+        const toolCallId = tc.id ?? assistantMsg.tool_calls!.find(
           (w) => w.function.name === tc.name && w.function.arguments === tc.arguments,
         )!.id;
 

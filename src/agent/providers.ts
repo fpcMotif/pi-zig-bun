@@ -3,13 +3,45 @@ import type { AgentAdapter, AgentRequest, AgentResponse, AgentStream, AgentStrea
 
 const activeControllers = new Map<string, AbortController>();
 
-async function* streamQueue(queue: AgentStreamEvent[]): AsyncGenerator<AgentStreamEvent> {
-  while (true) {
-    if (queue.length > 0) {
-      yield queue.shift()!;
-      continue;
+class AsyncQueue<T> {
+  private buffer: T[] = [];
+  private resolve: ((value: IteratorResult<T>) => void) | null = null;
+  private closed = false;
+
+  push(item: T): void {
+    if (this.closed) return;
+    if (this.resolve) {
+      const r = this.resolve;
+      this.resolve = null;
+      r({ value: item, done: false });
+    } else {
+      this.buffer.push(item);
     }
-    await Bun.sleep(10);
+  }
+
+  close(): void {
+    this.closed = true;
+    if (this.resolve) {
+      const r = this.resolve;
+      this.resolve = null;
+      r({ value: undefined as any, done: true });
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<T> {
+    return {
+      next: (): Promise<IteratorResult<T>> => {
+        if (this.buffer.length > 0) {
+          return Promise.resolve({ value: this.buffer.shift()!, done: false });
+        }
+        if (this.closed) {
+          return Promise.resolve({ value: undefined as any, done: true });
+        }
+        return new Promise<IteratorResult<T>>((resolve) => {
+          this.resolve = resolve;
+        });
+      },
+    };
   }
 }
 
@@ -46,17 +78,25 @@ abstract class BaseSseAgent implements AgentAdapter {
     activeControllers.set(requestId, controller);
 
     const { url, init } = this.buildRequest(input, true);
-    const response = await fetch(url, { ...init, signal: controller.signal });
+
+    let response: Response;
+    try {
+      response = await fetch(url, { ...init, signal: controller.signal });
+    } catch (err) {
+      activeControllers.delete(requestId);
+      throw err;
+    }
     if (!response.ok || !response.body) {
+      activeControllers.delete(requestId);
       throw new Error(`Upstream error ${response.status}: ${await response.text()}`);
     }
 
-    const queue: AgentStreamEvent[] = [];
-    let finished = false;
+    const channel = new AsyncQueue<AgentStreamEvent>();
     let text = "";
     const toolCalls: AgentToolCall[] = [];
 
     (async () => {
+      let finished = false;
       try {
         for await (const event of parseSse(response.body!)) {
           if (event.data === "[DONE]") {
@@ -72,30 +112,32 @@ abstract class BaseSseAgent implements AgentAdapter {
           const chunk = this.parseChunk(parsed);
           if (chunk.token) {
             text += chunk.token;
-            queue.push({ type: "token", token: chunk.token });
+            channel.push({ type: "token", token: chunk.token });
           }
           if (chunk.toolCall) {
             toolCalls.push(chunk.toolCall);
-            queue.push({ type: "tool_call", toolCall: chunk.toolCall });
+            channel.push({ type: "tool_call", toolCall: chunk.toolCall });
           }
           if (chunk.done) {
             const finalText = chunk.finalText ?? text;
-            queue.push({ type: "done", response: { text: finalText, toolCalls, raw: parsed } });
+            channel.push({ type: "done", response: { text: finalText, toolCalls: [...toolCalls], raw: parsed } });
             finished = true;
             break;
           }
         }
         if (!finished) {
-          queue.push({ type: "done", response: { text, toolCalls } });
+          channel.push({ type: "done", response: { text, toolCalls: [...toolCalls] } });
         }
       } catch (err) {
-        queue.push({ type: "error", error: (err as Error).message });
+        channel.push({ type: "error", error: (err as Error).message });
+      } finally {
+        channel.close();
       }
     })();
 
     return {
       requestId,
-      events: streamQueue(queue),
+      events: channel,
       cancel: async () => {
         controller.abort();
         activeControllers.delete(requestId);

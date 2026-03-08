@@ -141,17 +141,17 @@ export class SearchBridge {
       const err = new Error(
         `Search bridge exited${code !== null ? ` with code ${code}` : ` with signal ${String(signal)}`}`,
       );
-      if (code !== null && code !== 0) {
-        for (const call of this.pending.values()) {
-          call.reject(err);
-        }
-        this.pending.clear();
+      for (const call of this.pending.values()) {
+        if (call.timeoutHandle) clearTimeout(call.timeoutHandle);
+        call.reject(err);
       }
+      this.pending.clear();
       this.started = false;
     });
 
     this.proc.on("error", (err) => {
       for (const call of this.pending.values()) {
+        if (call.timeoutHandle) clearTimeout(call.timeoutHandle);
         call.reject(new Error(`Search bridge process error: ${(err as Error).message}`));
       }
       this.pending.clear();
@@ -173,6 +173,7 @@ export class SearchBridge {
     this.proc = undefined;
     this.started = false;
     for (const call of this.pending.values()) {
+      if (call.timeoutHandle) clearTimeout(call.timeoutHandle);
       call.reject(new Error("search bridge stopped"));
     }
     this.pending.clear();
@@ -244,7 +245,7 @@ export class SearchBridge {
       ...(params === undefined ? {} : { params }),
     };
 
-    return await new Promise<unknown>((resolve, reject) => {
+    return (await new Promise<unknown>((resolve, reject) => {
       const timeoutHandle = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`search bridge timed out after ${this.requestTimeoutMs}ms`));
@@ -263,13 +264,6 @@ export class SearchBridge {
         this.pending.delete(id);
         reject(err as Error);
       }
-    }).then((value) => {
-      const call = this.pending.get(id);
-      if (call?.timeoutHandle) {
-        clearTimeout(call.timeoutHandle);
-      }
-      this.pending.delete(id);
-      return value as T;
-    });
+    })) as T;
   }
 }

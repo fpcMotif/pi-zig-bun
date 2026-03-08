@@ -58,20 +58,14 @@ describe("loadSkills", () => {
     }
   });
 
-  test("registers placeholder tool when nothing is discovered", async () => {
+  test("returns zero loaded when no skills are discovered", async () => {
     const root = await tempDir("pi-skill-empty-");
     try {
       const registry = new MemoryToolRegistry();
       const result = await loadSkills(registry, [root]);
       expect(result.loaded).toBe(0);
-
-      const noopTool = registry.list().find((tool) => tool.id === "__noop__");
-      expect(noopTool).toBeDefined();
-
-      // Execute the placeholder tool to ensure it returns { ok: true }
-      const ctx = { id: "test", cwd: root, capabilities: { require: () => {} } };
-      const res = await noopTool!.execute(ctx, {});
-      expect(res).toEqual({ ok: true });
+      expect(result.failed).toBe(0);
+      expect(result.tools).toHaveLength(0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -92,7 +86,7 @@ describe("loadSkills", () => {
 
       expect(result.loaded).toBe(0);
       expect(result.failed).toBe(0);
-      expect(registry.list().some((tool) => tool.id === "__noop__")).toBe(true);
+      expect(registry.list()).toHaveLength(0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -104,7 +98,7 @@ describe("loadSkills", () => {
 
     expect(result.loaded).toBe(0);
     expect(result.failed).toBe(0);
-    expect(registry.list().some((tool) => tool.id === "__noop__")).toBe(true);
+    expect(registry.list()).toHaveLength(0);
   });
 
   test("provides registerHook and capabilities.require in context", async () => {

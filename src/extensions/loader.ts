@@ -5,16 +5,6 @@ import { pathToFileURL } from "node:url";
 import type { ExtensionLoaderResult, SkillContext, SkillModule } from "./types";
 import type { ToolRegistry, Tool } from "../tools/types";
 
-const TOOL_PLACEHOLDER: Tool = {
-  id: "__noop__",
-  name: "noop",
-  description: "placeholder",
-  capabilities: [],
-  async execute() {
-    return { ok: true };
-  },
-};
-
 export async function loadSkills(
   registry: ToolRegistry,
   searchRoots: string[],
@@ -79,13 +69,6 @@ export async function loadSkills(
       }
     } catch {
       // ignore invalid directories
-    }
-  }
-
-  // Keep tooling safe if no plugin exported tools.
-  if (registry.list().length === 0) {
-    for (const tool of [TOOL_PLACEHOLDER]) {
-      registry.register(tool);
     }
   }
 
