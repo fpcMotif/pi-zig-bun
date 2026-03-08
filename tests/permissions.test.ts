@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { CapabilityManager } from "../src/permissions";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { CapabilityManager, loadPolicyFile } from "../src/permissions";
 
 describe("CapabilityManager glob and transitions", () => {
   test("supports single-star and double-star semantics", () => {
@@ -29,5 +32,74 @@ describe("CapabilityManager glob and transitions", () => {
     manager.allowAll();
     expect(manager.can("session.access")).toBe(true);
     expect(manager.can("net.http", "https://example.com")).toBe(true);
+  });
+
+  test("require throws when capability is denied and passes when allowed", () => {
+    const manager = new CapabilityManager({
+      "fs.read": ["src/**"],
+    });
+
+    expect(() => manager.require("fs.read", "README.md")).toThrow("Capability denied");
+    expect(() => manager.require("fs.read", "src/main.ts")).not.toThrow();
+  });
+
+  test("snapshot returns a defensive copy", () => {
+    const manager = new CapabilityManager({
+      "fs.read": ["src/**"],
+    });
+
+    const snapshot = manager.snapshot();
+    snapshot["fs.read"] = "*";
+
+    expect(manager.can("fs.read", "README.md")).toBe(false);
+    expect(manager.can("fs.read", "src/main.ts")).toBe(true);
+  });
+});
+
+describe("loadPolicyFile", () => {
+  test("returns an empty policy when the file is missing", () => {
+    const missingPath = path.join(os.tmpdir(), `missing-policy-${crypto.randomUUID()}.json`);
+    expect(loadPolicyFile(missingPath)).toEqual({});
+  });
+
+  test("throws when policy JSON is invalid", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "pi-policy-"));
+    try {
+      const policyPath = path.join(root, "policy.json");
+      await writeFile(policyPath, "{not-json", "utf8");
+      expect(() => loadPolicyFile(policyPath)).toThrow();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("throws when policy JSON is not an object", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "pi-policy-"));
+    try {
+      const policyPath = path.join(root, "policy.json");
+      await writeFile(policyPath, JSON.stringify(["fs.read"]), "utf8");
+      expect(() => loadPolicyFile(policyPath)).toThrow("policy.json must be a JSON object");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("parses wildcard and array capability entries", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "pi-policy-"));
+    try {
+      const policyPath = path.join(root, "policy.json");
+      await writeFile(policyPath, JSON.stringify({
+        "fs.read": ["src/**"],
+        "fs.write": "*",
+        ignored: 123,
+      }), "utf8");
+
+      expect(loadPolicyFile(policyPath)).toEqual({
+        "fs.read": ["src/**"],
+        "fs.write": "*",
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

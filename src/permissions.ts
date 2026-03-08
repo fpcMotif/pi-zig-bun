@@ -122,7 +122,7 @@ export function loadPolicyFile(policyPath: string): CapabilityPolicy {
   try {
     const raw = require("node:fs").readFileSync(policyPath, "utf8");
     const parsed = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null) {
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       throw new Error("policy.json must be a JSON object");
     }
     const policy: CapabilityPolicy = {};
