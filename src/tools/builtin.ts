@@ -1,12 +1,17 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, realpathSync, existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import type { Tool, ToolExecutionContext } from "./types";
 import type { ToolResult } from "../permissions";
 
+/** Hard ceiling on file reads to prevent OOM from enormous files. */
 const MAX_READ_BYTES = 500_000;
 
+/**
+ * Resolve and validate a tool-supplied path against the workspace root.
+ * Guards against both `..` traversal and symlink escapes.
+ */
 function readPath(ctx: ToolExecutionContext, input: unknown): string {
   const value = (input as { path?: string }).path;
   if (!value || typeof value !== "string") {
@@ -14,10 +19,24 @@ function readPath(ctx: ToolExecutionContext, input: unknown): string {
   }
   const workspaceRoot = path.resolve(ctx.cwd);
   const resolved = path.resolve(workspaceRoot, value);
+
+  // First check: reject obvious `..` traversal before touching the filesystem.
   const relative = path.relative(workspaceRoot, resolved);
   if (path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`)) {
     throw new Error("Path traversal detected");
   }
+
+  // Second check: resolve symlinks to catch escapes via symlinked directories.
+  // Only run when the target already exists (writes to new paths are fine).
+  if (existsSync(resolved)) {
+    const realResolved = realpathSync(resolved);
+    const realWorkspace = realpathSync(workspaceRoot);
+    const realRelative = path.relative(realWorkspace, realResolved);
+    if (path.isAbsolute(realRelative) || realRelative === ".." || realRelative.startsWith(`..${path.sep}`)) {
+      throw new Error("Path traversal detected (symlink escape)");
+    }
+  }
+
   return resolved;
 }
 

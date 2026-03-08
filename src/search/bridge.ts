@@ -186,12 +186,10 @@ export class SearchBridge {
     }
 
     const line = `${JSON.stringify(payload)}\n`;
-    const ok = this.proc.stdin.write(line, "utf8");
-    if (!ok) {
-      this.proc.stdin.once("drain", () => {
-        this.proc?.stdin?.write("");
-      });
-    }
+    this.proc.stdin.write(line, "utf8");
+    // Backpressure is acceptable here: Node buffers the data internally
+    // and flushes when the kernel is ready. No additional drain handling
+    // needed for newline-delimited JSON-RPC over stdin.
   }
 
   private handleLine(line: string): void {
@@ -208,15 +206,13 @@ export class SearchBridge {
       }
 
       this.pending.delete(payload.id);
+      if (pending.timeoutHandle) {
+        clearTimeout(pending.timeoutHandle);
+      }
+
       if ("error" in payload) {
-        if (pending.timeoutHandle) {
-          clearTimeout(pending.timeoutHandle);
-        }
         pending.reject(new Error(`${payload.error.code}: ${payload.error.message}`));
       } else {
-        if (pending.timeoutHandle) {
-          clearTimeout(pending.timeoutHandle);
-        }
         pending.resolve(payload.result);
       }
     } catch {

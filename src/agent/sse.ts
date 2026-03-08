@@ -62,7 +62,9 @@ export async function* parseSse(stream: ReadableStream<Uint8Array>): AsyncGenera
       }
 
       if (line.startsWith("data:")) {
-        currentData.push(line.slice("data:".length).trimStart());
+        const raw = line.slice("data:".length);
+        // SSE spec: strip exactly one leading space, not all whitespace.
+        currentData.push(raw.startsWith(" ") ? raw.slice(1) : raw);
       }
     }
   }

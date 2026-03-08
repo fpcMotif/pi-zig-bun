@@ -182,7 +182,11 @@ export class OpenAIAdapter extends BaseSseAgent {
 }
 
 export class AnthropicAdapter extends BaseSseAgent {
-  constructor(private readonly apiKey: string, private readonly model = "claude-3-5-sonnet-latest") {
+  constructor(
+    private readonly apiKey: string,
+    private readonly model = "claude-3-5-sonnet-latest",
+    private readonly maxTokens = 4096,
+  ) {
     super();
   }
 
@@ -196,7 +200,7 @@ export class AnthropicAdapter extends BaseSseAgent {
           "x-api-key": this.apiKey,
           "anthropic-version": "2023-06-01",
         },
-        body: JSON.stringify({ model: input.model ?? this.model, max_tokens: 1024, messages: input.messages.filter((m) => m.role !== "system"), stream }),
+        body: JSON.stringify({ model: input.model ?? this.model, max_tokens: this.maxTokens, messages: input.messages.filter((m) => m.role !== "system"), stream }),
       },
     };
   }
@@ -226,10 +230,10 @@ export class GoogleGenAIAdapter extends BaseSseAgent {
   protected buildRequest(input: AgentRequest, stream: boolean): { url: string; init: RequestInit } {
     const method = stream ? "streamGenerateContent" : "generateContent";
     return {
-      url: `https://generativelanguage.googleapis.com/v1beta/models/${input.model ?? this.model}:${method}?key=${this.apiKey}`,
+      url: `https://generativelanguage.googleapis.com/v1beta/models/${input.model ?? this.model}:${method}`,
       init: {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-goog-api-key": this.apiKey },
         body: JSON.stringify({ contents: input.messages.map((m) => ({ role: m.role === "assistant" ? "model" : "user", parts: [{ text: m.content }] })) }),
       },
     };

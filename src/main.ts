@@ -104,7 +104,10 @@ async function executeToolCall(
   try {
     parsedArgs = JSON.parse(toolCall.arguments);
   } catch {
-    return JSON.stringify({ ok: false, error: `Invalid JSON arguments: ${toolCall.arguments}` });
+    const truncatedArgs = toolCall.arguments.length > 200
+      ? `${toolCall.arguments.slice(0, 200)}...(truncated)`
+      : toolCall.arguments;
+    return JSON.stringify({ ok: false, error: `Invalid JSON arguments: ${truncatedArgs}` });
   }
 
   try {
@@ -323,10 +326,12 @@ async function runInteractive(
       const assistantMsg = buildAssistantToolCallMessage(turn.text, turn.toolCalls);
       messages.push(assistantMsg);
 
+      const usedToolCallIds = new Set<string>();
       for (const tc of turn.toolCalls) {
         const toolCallId = tc.id ?? assistantMsg.tool_calls!.find(
-          (w) => w.function.name === tc.name && w.function.arguments === tc.arguments,
+          (w) => w.function.name === tc.name && w.function.arguments === tc.arguments && !usedToolCallIds.has(w.id),
         )!.id;
+        usedToolCallIds.add(toolCallId);
 
         tui.writeToolExecution(tc.name);
         const resultContent = await executeToolCall(registry, capabilities, cwd, tc);
@@ -359,7 +364,7 @@ async function runInteractive(
     iface.prompt();
   }
 
-  await runtime.search.stop();
+  // Note: search.stop() is called by the top-level finally block in run().
   iface.close();
 }
 

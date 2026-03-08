@@ -135,7 +135,7 @@ describe("AnthropicAdapter", () => {
 
     const body = JSON.parse(init.body as string);
     expect(body.model).toBe("claude-3-5-sonnet-latest");
-    expect(body.max_tokens).toBe(1024);
+    expect(body.max_tokens).toBe(4096);
     expect(body.stream).toBe(true);
   });
 
@@ -188,23 +188,24 @@ describe("AnthropicAdapter", () => {
 describe("GoogleGenAIAdapter", () => {
   const adapter = new TestableGoogle("goog-test-key", "gemini-1.5-flash");
 
-  test("buildRequest produces correct streaming URL with API key", () => {
+  test("buildRequest produces correct streaming URL with API key in header", () => {
     const { url, init } = adapter.exposeBuildRequest(sampleRequest, true);
 
     expect(url).toBe(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent?key=goog-test-key",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:streamGenerateContent",
     );
     expect(init.method).toBe("POST");
 
     const headers = init.headers as Record<string, string>;
     expect(headers["content-type"]).toBe("application/json");
-    // Google does not send Authorization header; the key is in the query string
-    expect(headers["authorization"]).toBeUndefined();
+    // API key is sent via header, not query string, to prevent leaking in logs.
+    expect(headers["x-goog-api-key"]).toBe("goog-test-key");
+    expect(url).not.toContain("key=");
   });
 
   test("buildRequest uses generateContent for non-streaming requests", () => {
     const { url } = adapter.exposeBuildRequest(sampleRequest, false);
-    expect(url).toContain(":generateContent?");
+    expect(url).toContain(":generateContent");
     expect(url).not.toContain("stream");
   });
 
