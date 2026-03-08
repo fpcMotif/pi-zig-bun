@@ -169,11 +169,12 @@ describe("SearchBridge protocol behavior", () => {
     const fixture = await createFakeBridgeBinary("ok");
     const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
     try {
-      const response = await bridge.uiUpdate({ type: "progress", progress: 0.5 });
+      const params = { turnId: "turn-1", kind: "status" as const, message: "progress", meta: { progress: 0.5 } };
+      const response = await bridge.uiUpdate(params);
       // @ts-ignore - testing the echoed result
       expect(response.method).toBe("ui.update");
       // @ts-ignore
-      expect(response.echoed).toEqual({ type: "progress", progress: 0.5 });
+      expect(response.echoed).toEqual(params);
     } finally {
       await bridge.stop();
       await rm(fixture.root, { recursive: true, force: true });
@@ -184,11 +185,12 @@ describe("SearchBridge protocol behavior", () => {
     const fixture = await createFakeBridgeBinary("ok");
     const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
     try {
-      const response = await bridge.uiInput({ prompt: "testing" });
+      const params = { turnId: "turn-1", text: "testing", metadata: { source: "test" } };
+      const response = await bridge.uiInput(params);
       // @ts-ignore - testing the echoed result
       expect(response.method).toBe("ui.input");
       // @ts-ignore
-      expect(response.echoed).toEqual({ prompt: "testing" });
+      expect(response.echoed).toEqual(params);
     } finally {
       await bridge.stop();
       await rm(fixture.root, { recursive: true, force: true });
