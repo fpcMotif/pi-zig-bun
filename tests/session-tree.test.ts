@@ -81,6 +81,43 @@ describe("SessionTree invariants", () => {
     });
   });
 
+  test("allTurns returns defensive copies so callers cannot corrupt cached state", async () => {
+    await withTempWorkspace(async (root) => {
+      const store = new SessionStore(root);
+      const tree = new SessionTree(store);
+      const rootTurn = await tree.createRoot("system", "root");
+
+      const turns = await store.allTurns();
+      turns[0]!.content = "mutated";
+      turns.push({
+        ...rootTurn,
+        id: "synthetic-turn",
+      });
+
+      const refreshedTurns = await store.allTurns();
+      expect(refreshedTurns).toHaveLength(1);
+      expect(refreshedTurns[0]?.id).toBe(rootTurn.id);
+      expect(refreshedTurns[0]?.content).toBe("root");
+    });
+  });
+
+  test("createRoot invalidates stale caches after another store writes to disk", async () => {
+    await withTempWorkspace(async (root) => {
+      const primaryStore = new SessionStore(root);
+      const primaryTree = new SessionTree(primaryStore);
+      const secondaryTree = new SessionTree(new SessionStore(root));
+
+      const firstRoot = await primaryTree.createRoot("system", "first");
+      await primaryStore.allTurns();
+      const externalRoot = await secondaryTree.createRoot("system", "external");
+      const localRoot = await primaryTree.createRoot("system", "local");
+
+      const turns = await primaryStore.allTurns();
+      expect(new Set(turns.map((turn) => turn.id))).toEqual(new Set([firstRoot.id, externalRoot.id, localRoot.id]));
+      expect(turns).toHaveLength(3);
+    });
+  });
+
   test("forking from a non-existent parent throws an error", async () => {
     await withTempWorkspace(async (root) => {
       const store = new SessionStore(root);

@@ -151,13 +151,19 @@ export class SearchBridge {
       return;
     }
 
-    this.proc.kill();
+    const proc = this.proc;
+    const closePromise = new Promise<void>((resolve) => {
+      proc.once("close", () => resolve());
+    });
+
+    proc.kill();
     this.proc = undefined;
     this.started = false;
     for (const call of this.pending.values()) {
       call.reject(new Error("search bridge stopped"));
     }
     this.pending.clear();
+    await closePromise;
   }
 
   private write(payload: RpcRequest): void {

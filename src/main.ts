@@ -405,48 +405,52 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
     capabilities,
   };
 
-  switch (args.command) {
-    case "search": {
-      if (!args.query) {
-        console.error("search requires <query>");
-        return 2;
-      }
-      await runSearchCommand(runtime, args.query, args.limit, args.json);
-      return 0;
-    }
-    case "grep": {
-      if (!args.query) {
-        console.error("grep requires <query>");
-        return 2;
-      }
-      await runGrepCommand(runtime, args.query, args.limit, args.json);
-      return 0;
-    }
-    case "tree": {
-      const heads = await runtime.sessionTree.tree();
-      if (args.json) {
-        console.log(JSON.stringify(heads, null, 2));
-      } else {
-        console.log(`Session heads: ${heads.length}`);
-        for (const head of heads) {
-          console.log(`${head.id} | parent=${head.parentId ?? "<root>"} | ${head.createdAt}`);
+  try {
+    switch (args.command) {
+      case "search": {
+        if (!args.query) {
+          console.error("search requires <query>");
+          return 2;
         }
+        await runSearchCommand(runtime, args.query, args.limit, args.json);
+        return 0;
       }
-      return 0;
-    }
-    case "session":
-      if (!args.rootSession) {
-        console.log("Session subcommand usage: session --root-session <id>");
-        return 1;
+      case "grep": {
+        if (!args.query) {
+          console.error("grep requires <query>");
+          return 2;
+        }
+        await runGrepCommand(runtime, args.query, args.limit, args.json);
+        return 0;
       }
-      const rootTurn = await runtime.sessionTree.history(args.rootSession);
-      console.log(JSON.stringify(rootTurn, null, 2));
-      return 0;
-    case "interactive":
-    default: {
-      await runInteractive(runtime, registry, capabilities, args.json);
-      return 0;
+      case "tree": {
+        const heads = await runtime.sessionTree.tree();
+        if (args.json) {
+          console.log(JSON.stringify(heads, null, 2));
+        } else {
+          console.log(`Session heads: ${heads.length}`);
+          for (const head of heads) {
+            console.log(`${head.id} | parent=${head.parentId ?? "<root>"} | ${head.createdAt}`);
+          }
+        }
+        return 0;
+      }
+      case "session":
+        if (!args.rootSession) {
+          console.log("Session subcommand usage: session --root-session <id>");
+          return 1;
+        }
+        const rootTurn = await runtime.sessionTree.history(args.rootSession);
+        console.log(JSON.stringify(rootTurn, null, 2));
+        return 0;
+      case "interactive":
+      default: {
+        await runInteractive(runtime, registry, capabilities, args.json);
+        return 0;
+      }
     }
+  } finally {
+    await runtime.search.stop();
   }
 }
 

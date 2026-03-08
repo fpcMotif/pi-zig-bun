@@ -11,11 +11,10 @@ async function makeWorkspace() {
 
   const binaryPath = path.join(binDir, "pi-zig-search");
   await writeFile(binaryPath, `#!/usr/bin/env node
-let raw = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => { raw += chunk; });
-process.stdin.on("end", () => {
-  const req = JSON.parse(raw.trim());
+import readline from "node:readline";
+const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+rl.on("line", (line) => {
+  const req = JSON.parse(line);
   const method = req.method;
   const params = req.params ?? {};
   let result;

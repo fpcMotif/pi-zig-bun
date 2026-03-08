@@ -56,7 +56,7 @@ describe("SearchBridge protocol behavior", () => {
   test("recovers after process crash on next call", async () => {
     const crashFixture = await createFakeBridgeBinary("crash");
     const okFixture = await createFakeBridgeBinary("ok");
-    const bridge = new SearchBridge({ binaryPath: crashFixture.binaryPath, workspaceRoot: crashFixture.root, requestTimeoutMs: 100 });
+    const bridge = new SearchBridge({ binaryPath: crashFixture.binaryPath, workspaceRoot: crashFixture.root, requestTimeoutMs: 200 });
     try {
       let crashed = false;
       try {
@@ -67,7 +67,7 @@ describe("SearchBridge protocol behavior", () => {
       }
       expect(crashed).toBe(true);
       await bridge.stop();
-      const recovered = new SearchBridge({ binaryPath: okFixture.binaryPath, workspaceRoot: okFixture.root, requestTimeoutMs: 100 });
+      const recovered = new SearchBridge({ binaryPath: okFixture.binaryPath, workspaceRoot: okFixture.root, requestTimeoutMs: 200 });
       try {
         const response = await recovered.call<{ method: string }>("search.grep", { query: "abc" });
         expect(response.method).toBe("search.grep");

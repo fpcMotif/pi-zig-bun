@@ -55,29 +55,32 @@ export class SessionStore {
     return items;
   }
 
+  private cloneTurns(turns: SessionTurn[]): SessionTurn[] {
+    return turns.map((turn) => ({
+      ...turn,
+      metadata: turn.metadata ? { ...turn.metadata } : undefined,
+    }));
+  }
+
   public async allTurns(): Promise<SessionTurn[]> {
     await this.ensureStore();
     const stats = await stat(this.filePath);
 
     if (this.cachedTurns && this.lastFileStats && stats.size === this.lastFileStats.size && stats.mtimeMs === this.lastFileStats.mtimeMs) {
-        return this.cachedTurns;
+      return this.cloneTurns(this.cachedTurns);
     }
 
     const content = await readFile(this.filePath, "utf8");
     this.cachedTurns = this.deserialize(content);
     this.lastFileStats = { size: stats.size, mtimeMs: stats.mtimeMs };
-    return this.cachedTurns;
+    return this.cloneTurns(this.cachedTurns);
   }
 
   public async addTurn(turn: SessionTurn): Promise<void> {
     await this.ensureStore();
     await appendFile(this.filePath, `${JSON.stringify(turn)}\n`, "utf8");
-
-    if (this.cachedTurns) {
-        this.cachedTurns.push(turn);
-        const stats = await stat(this.filePath);
-        this.lastFileStats = { size: stats.size, mtimeMs: stats.mtimeMs };
-    }
+    this.cachedTurns = null;
+    this.lastFileStats = null;
   }
 
   public createRootTurn(role: SessionTurn["role"], content: string): SessionTurn {
