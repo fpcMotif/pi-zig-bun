@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile, chmod } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { SearchBridge } from "../src/search/bridge";
+import type { UiInputParams, UiUpdateParams } from "../src/rpc/types";
 
 async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash" | "stderr" | "malformed" | "rpc_error"): Promise<{ root: string; binaryPath: string }> {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-bridge-"));
@@ -169,7 +170,12 @@ describe("SearchBridge protocol behavior", () => {
     const fixture = await createFakeBridgeBinary("ok");
     const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
     try {
-      const params = { turnId: "turn-1", kind: "status" as const, message: "progress", meta: { progress: 0.5 } };
+      const params: UiUpdateParams = {
+        turnId: "turn-1",
+        kind: "status",
+        message: "progress",
+        meta: { progress: 0.5 },
+      };
       const response = await bridge.uiUpdate(params);
       // @ts-ignore - testing the echoed result
       expect(response.method).toBe("ui.update");
@@ -185,7 +191,11 @@ describe("SearchBridge protocol behavior", () => {
     const fixture = await createFakeBridgeBinary("ok");
     const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
     try {
-      const params = { turnId: "turn-1", text: "testing", metadata: { source: "test" } };
+      const params: UiInputParams = {
+        turnId: "turn-1",
+        text: "testing",
+        metadata: { source: "test" },
+      };
       const response = await bridge.uiInput(params);
       // @ts-ignore - testing the echoed result
       expect(response.method).toBe("ui.input");
