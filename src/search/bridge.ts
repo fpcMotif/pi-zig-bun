@@ -100,12 +100,25 @@ export class SearchBridge {
     }
 
     this.started = true;
-    mkdirSync(path.join(this.workspaceRoot, ".pi"), { recursive: true });
-    const stderrLog = path.join(this.workspaceRoot, ".pi", "search-bridge.stderr.log");
+
+    // We shouldn't fail fatally if the root directory is wiped while bridge runs.
+    // Ensure the directory exists initially.
+    const piDir = path.join(this.workspaceRoot, ".pi");
+    mkdirSync(piDir, { recursive: true });
+
+    const stderrLog = path.join(piDir, "search-bridge.stderr.log");
 
     if (this.proc.stderr) {
       this.proc.stderr.on("data", (chunk) => {
-        appendFileSync(stderrLog, chunk);
+        try {
+          // Re-create the directory if it was deleted concurrently before logging.
+          if (!existsSync(piDir)) {
+            mkdirSync(piDir, { recursive: true });
+          }
+          appendFileSync(stderrLog, chunk);
+        } catch {
+          // ignore logging errors to prevent breaking the bridge
+        }
       });
     }
 
