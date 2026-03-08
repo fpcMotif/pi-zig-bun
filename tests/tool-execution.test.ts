@@ -72,6 +72,14 @@ describe("readTool", () => {
   test("throws when the path argument is missing", async () => {
     expect(() => readTool.execute(makeCtx(tmpDir), {} as any)).toThrow("path");
   });
+
+  test("rejects relative path traversal outside cwd", async () => {
+    await expect(readTool.execute(makeCtx(tmpDir), { path: "../../../etc/passwd" })).rejects.toThrow("Path traversal detected");
+  });
+
+  test("rejects absolute path traversal outside cwd", async () => {
+    await expect(readTool.execute(makeCtx(tmpDir), { path: "/etc/passwd" })).rejects.toThrow("Path traversal detected");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -110,6 +118,18 @@ describe("writeTool", () => {
     expect(result.ok).toBe(true);
     const ondisk = await readFile(filePath, "utf8");
     expect(ondisk).toBe("deep");
+  });
+
+  test("rejects writes outside cwd", async () => {
+    await expect(writeTool.execute(makeCtx(tmpDir), {
+      path: "../../../etc/passwd",
+      content: "hacked",
+    })).rejects.toThrow("Path traversal detected");
+
+    await expect(writeTool.execute(makeCtx(tmpDir), {
+      path: "/etc/passwd",
+      content: "hacked",
+    })).rejects.toThrow("Path traversal detected");
   });
 });
 
@@ -167,6 +187,20 @@ describe("editTool", () => {
       editTool.execute(makeCtx(tmpDir), { path: filePath } as any),
     ).toThrow("edit requires");
   });
+
+  test("rejects edits outside cwd", async () => {
+    await expect(editTool.execute(makeCtx(tmpDir), {
+      path: "../../../etc/passwd",
+      from: "a",
+      to: "b",
+    })).rejects.toThrow("Path traversal detected");
+
+    await expect(editTool.execute(makeCtx(tmpDir), {
+      path: "/etc/passwd",
+      from: "a",
+      to: "b",
+    })).rejects.toThrow("Path traversal detected");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -205,6 +239,27 @@ describe("bashTool", () => {
 
   test("throws when the command field is missing", async () => {
     expect(() => bashTool.execute(makeCtx(tmpDir), {} as any)).toThrow("bash requires");
+  });
+
+  test("returns structured failure for non-zero exit status", async () => {
+    const result = (await bashTool.execute(makeCtx(tmpDir), {
+      command: "echo nope >&2; exit 7",
+    })) as ToolResult;
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("nope");
+    expect(result.output).toBe("");
+    expect((result.data as { exitCode: number }).exitCode).toBe(7);
+  });
+
+  test("returns structured failure when spawning bash fails", async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+    const result = (await bashTool.execute(makeCtx(tmpDir), {
+      command: "echo hello",
+    })) as ToolResult;
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("bash execution failed");
   });
 });
 
