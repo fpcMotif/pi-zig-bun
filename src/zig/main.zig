@@ -1038,6 +1038,7 @@ fn loweredSlice(allocator: Allocator, input: []const u8) ![]const u8 {
 
 fn writeResult(writer: *std.Io.Writer, id: i64, payload: anytype) !void {
     try writer.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{f}}}\n", .{ id, std.json.fmt(payload, .{}) });
+    try writer.flush();
 }
 
 fn writeError(writer: *std.Io.Writer, id: i64, code: i32, message: []const u8) !void {
@@ -1047,6 +1048,7 @@ fn writeError(writer: *std.Io.Writer, id: i64, code: i32, message: []const u8) !
     }{ .code = code, .message = message };
 
     try writer.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"error\":{f}}}\n", .{ id, std.json.fmt(payload, .{}) });
+    try writer.flush();
 }
 
 fn handleRequest(

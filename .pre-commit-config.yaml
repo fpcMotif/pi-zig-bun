@@ -1,0 +1,21 @@
+repos:
+  - repo: local
+    hooks:
+      - id: bun-validate
+        name: bun run validate
+        entry: bun run validate
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: zig-build
+        name: zig build
+        entry: zig build
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: search-regression
+        name: bun run ci:search-regression
+        entry: bun run ci:search-regression
+        language: system
+        pass_filenames: false
+        always_run: true
