@@ -20,9 +20,10 @@ export const readTool: Tool<{ path: string }, ToolResult> = {
   name: "read",
   description: "Read a UTF-8 text file from disk with hard read-size guard",
   capabilities: ["fs.read"],
+  source: "builtin",
   async execute(ctx, input): Promise<ToolResult> {
     const resolved = readPath(ctx, input);
-    ctx.capabilities.require("fs.read", resolved);
+    await ctx.capabilities.require("fs.read", resolved, "tool:read");
 
     const stats = statSync(resolved);
     if (stats.size > MAX_READ_BYTES) {
@@ -48,9 +49,10 @@ export const writeTool: Tool<{ path: string; content: string; overwrite?: boolea
   name: "write",
   description: "Create or overwrite a file",
   capabilities: ["fs.write"],
+  source: "builtin",
   async execute(ctx, input): Promise<ToolResult> {
     const resolved = readPath(ctx, input);
-    ctx.capabilities.require("fs.write", resolved);
+    await ctx.capabilities.require("fs.write", resolved, "tool:write");
 
     const dir = path.dirname(resolved);
     mkdirSync(dir, { recursive: true });
@@ -69,10 +71,11 @@ export const editTool: Tool<{ path: string; from: string; to: string }, ToolResu
   name: "edit",
   description: "Replace exact text range in a file",
   capabilities: ["fs.read", "fs.write"],
+  source: "builtin",
   async execute(ctx, input): Promise<ToolResult> {
     const resolved = readPath(ctx, input);
-    ctx.capabilities.require("fs.read", resolved);
-    ctx.capabilities.require("fs.write", resolved);
+    await ctx.capabilities.require("fs.read", resolved, "tool:edit");
+    await ctx.capabilities.require("fs.write", resolved, "tool:edit");
 
     const payload = readFileSync(resolved, "utf8");
     const { from, to } = input as { from?: string; to?: string };
@@ -101,13 +104,14 @@ export const bashTool: Tool<{ command: string }, ToolResult> = {
   name: "bash",
   description: "Execute a shell command in project root context",
   capabilities: ["fs.execute"],
+  source: "builtin",
   async execute(ctx, input): Promise<ToolResult> {
     const command = (input as { command?: string }).command;
     if (!command) {
       throw new Error("bash requires { command }");
     }
 
-    ctx.capabilities.require("fs.execute", ctx.cwd);
+    await ctx.capabilities.require("fs.execute", ctx.cwd, "tool:bash");
     const output = execSync(command, {
       cwd: ctx.cwd,
       encoding: "utf8",

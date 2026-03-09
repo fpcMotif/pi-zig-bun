@@ -6,6 +6,7 @@ export interface ParsedCli {
   limit: number;
   rootSession?: string;
   help: boolean;
+  approvalMode: "auto" | "prompt" | "allow" | "deny";
 }
 
 function normalizeCommand(raw: string): ParsedCli["command"] {
@@ -31,6 +32,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
     cwd: process.cwd(),
     limit: 50,
     help: false,
+    approvalMode: "auto",
   };
 
   const args = [...argv];
@@ -76,6 +78,15 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
         }
         i += 2;
         continue;
+      case "--approval-mode":
+        if (args[i + 1] === undefined) {
+          throw new Error(`Missing value for ${token}`);
+        }
+        if (["auto", "prompt", "allow", "deny"].includes(args[i + 1]!)) {
+          options.approvalMode = args[i + 1]! as ParsedCli["approvalMode"];
+        }
+        i += 2;
+        continue;
       case "-r":
       case "--root-session":
         if (args[i + 1] === undefined) {
@@ -116,6 +127,7 @@ export function usage(): string {
     "  -c, --cwd <path>          Workspace root for index and sessions",
     "  -l, --limit <n>           Max results (default 50)",
     "  -r, --root-session <id>    Continue from a branch root session",
+    "      --approval-mode <mode>  Approval mode: auto|prompt|allow|deny",
     "",
     "Interactive mode (default):",
     "  /search <query>            Run file search",

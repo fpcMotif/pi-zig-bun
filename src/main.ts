@@ -1,3 +1,4 @@
+import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
 import process from "node:process";
@@ -6,7 +7,7 @@ import { parseCli, usage } from "./cli";
 import { SessionStore, SessionTree } from "./session/tree";
 import { MemoryToolRegistry, type Tool } from "./tools/types";
 import { builtinTools } from "./tools/builtin";
-import { CapabilityManager, type ToolResult } from "./permissions";
+import { CapabilityManager, loadRuntimePolicy } from "./permissions";
 import { loadSkills } from "./extensions/loader";
 
 interface AppRuntime {
@@ -137,14 +138,34 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
     args.cwd = path.join(process.cwd(), args.cwd);
   }
 
+  const policy = loadRuntimePolicy(args.cwd);
+
+  const approvalHandler = process.stdin.isTTY && process.stdout.isTTY
+    ? {
+      requestApproval: async ({ capability, target, caller }: { capability: string; target?: string; caller: string }) => {
+        const iface = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const answer = await iface.question(`Approve ${capability} for ${caller}${target ? ` (${target})` : ""}? [y/N]: `);
+        iface.close();
+        return answer.trim().toLowerCase() === "y" || answer.trim().toLowerCase() === "yes";
+      },
+    }
+    : undefined;
+
+  const auditLogPath = path.join(args.cwd, ".pi", "audit.log");
+  if (!existsSync(path.dirname(auditLogPath))) {
+    mkdirSync(path.dirname(auditLogPath), { recursive: true });
+  }
+
   const search = SearchClient.from({ workspaceRoot: args.cwd });
   await search.ensureInitialized(args.cwd);
-  const capabilities = new CapabilityManager({
-    "fs.read": "*",
-    "fs.write": "*",
-    "fs.execute": "*",
-    "session.access": "*",
-    "net.http": "*",
+  const capabilities = new CapabilityManager(policy.capabilities ?? {}, {
+    approvalMode: policy.approval?.mode ?? args.approvalMode,
+    approvalHandler,
+    promptCapabilities: policy.approval?.promptCapabilities,
+    auditLogPath,
+    toolAllowlist: policy.toolAllowlist,
+    extensionAllowlist: policy.extensionAllowlist,
+    allowUncategorizedTools: false,
   });
 
   const registry = new MemoryToolRegistry();

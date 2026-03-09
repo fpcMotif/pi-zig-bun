@@ -26,8 +26,9 @@ export async function loadSkills(
   };
 
   const registerTool = (tool: Tool) => {
-    registry.register(tool);
-    result.tools.push(tool);
+    const extensionTool: Tool = { ...tool, source: "extension" };
+    registry.register(extensionTool);
+    result.tools.push(extensionTool);
   };
 
   const registerHook = (_name: string, _cb: () => void | Promise<void>) => {
@@ -62,7 +63,7 @@ export async function loadSkills(
             registerTool,
             registerHook,
             capabilities: {
-              require: () => {
+              require: async () => {
                 // extension authors can call this directly if needed
               },
             },

@@ -5,7 +5,7 @@ export interface SkillContext {
   registerTool: (tool: Tool) => void;
   registerHook: (name: string, callback: () => void | Promise<void>) => void;
   capabilities: {
-    require: (capability: Capability, target?: string) => void;
+    require: (capability: Capability, target?: string, caller?: string) => Promise<void>;
   };
   root: string;
 }

@@ -4,7 +4,8 @@ export interface ToolExecutionContext {
   id: string;
   cwd: string;
   capabilities: {
-    require: (capability: Capability, target?: string) => void;
+    require: (capability: Capability, target?: string, caller?: string) => Promise<void>;
+    requireTool: (toolId: string, source: "builtin" | "extension", caller?: string) => Promise<void>;
   };
 }
 
@@ -13,6 +14,7 @@ export interface Tool<Input = unknown, Output = unknown> {
   name: string;
   description: string;
   capabilities: Capability[];
+  source?: "builtin" | "extension";
   execute: (ctx: ToolExecutionContext, input: Input) => Promise<Output> | Output;
 }
 
@@ -35,11 +37,13 @@ export class MemoryToolRegistry implements ToolRegistry {
       throw new Error(`Tool not found: ${id}`);
     }
 
+    await ctx.capabilities.requireTool(tool.id, tool.source ?? "extension", id);
+
     for (const capability of tool.capabilities) {
-      ctx.capabilities.require(capability,
-        typeof input === "object" && input !== null && "path" in input
-          ? String((input as { path?: string }).path)
-          : undefined,
+      await ctx.capabilities.require(
+        capability,
+        typeof input === "object" && input !== null && "path" in input ? String((input as { path?: string }).path) : ctx.cwd,
+        id,
       );
     }
 
