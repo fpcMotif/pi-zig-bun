@@ -1,5 +1,4 @@
 import path from "node:path";
-import readline from "node:readline/promises";
 import process from "node:process";
 import { SearchClient } from "./search/client";
 import { parseCli, usage } from "./cli";
@@ -57,72 +56,120 @@ async function runGrepCommand(runtime: AppRuntime, query: string, limit: number,
 }
 
 async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void> {
-  const iface = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-    prompt: "pi> ",
-  });
-
   const root = await runtime.sessionTree.createRoot("system", "interactive session");
   let currentTurn = root.id;
+  let input = "";
 
-  process.stdout.write("pi-zig-bun interactive\n");
-  process.stdout.write("Type /help for commands.\n");
+  const render = async (status = "Type /help for commands.", body = ""): Promise<void> => {
+    await runtime.search.updateUi({
+      title: "pi-zig-bun interactive",
+      status,
+      body,
+      prompt: "pi> ",
+      input,
+    });
+  };
 
-  for await (const line of iface) {
+  await render();
+
+  const executeCommand = async (line: string): Promise<void> => {
     const trimmed = line.trim();
     if (!trimmed) {
-      iface.prompt();
-      continue;
-    }
-
-    if (trimmed === "/quit" || trimmed === "/exit") {
-      break;
+      await render();
+      return;
     }
 
     if (trimmed === "/help") {
-      console.log(usage());
-      iface.prompt();
-      continue;
+      await render("Commands", usage());
+      return;
     }
 
     if (trimmed === "/tree") {
       const heads = await runtime.sessionTree.tree();
       if (json) {
-        console.log(JSON.stringify(heads, null, 2));
+        await render("Session heads", JSON.stringify(heads, null, 2));
       } else {
-        console.log(`Session heads: ${heads.length}`);
-        for (const head of heads) {
-          console.log(`${head.id} | ${head.createdAt} | ${head.role}`);
-        }
+        const summary = [
+          `Session heads: ${heads.length}`,
+          ...heads.map((head) => `${head.id} | ${head.createdAt} | ${head.role}`),
+        ].join("\n");
+        await render("Session heads", summary);
       }
-      iface.prompt();
-      continue;
+      return;
     }
 
     if (trimmed.startsWith("/search ")) {
       const query = trimmed.slice("/search ".length).trim();
-      await runSearchCommand(runtime, query, 100, false);
+      const response = await runtime.search.searchFiles(query, { limit: 100, cwd: process.cwd(), includeScores: true });
+      const lines =
+        response.results.length === 0
+          ? [`No matches for "${query}"`]
+          : response.results.map((item) => `${item.score.toString().padStart(4)}  ${item.path}  (${item.matchType})`);
       currentTurn = (await runtime.sessionTree.fork(currentTurn, "user", `/search ${query}`)).id;
-      iface.prompt();
-      continue;
+      await render(`search: ${query}`, lines.join("\n"));
+      return;
     }
 
     if (trimmed.startsWith("/grep ")) {
       const query = trimmed.slice("/grep ".length).trim();
-      await runGrepCommand(runtime, query, 200, false);
+      const response = await runtime.search.grep(query, { limit: 200, cwd: process.cwd() });
+      const lines =
+        response.matches.length === 0
+          ? [`No grep hits for "${query}"`]
+          : response.matches.map((hit) => `${hit.path}:${hit.line}:${hit.column + 1}  ${hit.text.trimEnd()}`);
       currentTurn = (await runtime.sessionTree.fork(currentTurn, "user", `/grep ${query}`)).id;
-      iface.prompt();
-      continue;
+      await render(`grep: ${query}`, lines.join("\n"));
+      return;
     }
 
-    console.log("Unsupported command. Use /help for supported commands.");
-    currentTurn = (await runtime.sessionTree.fork(currentTurn, "user", trimmed)).id;
-    iface.prompt();
-  }
+    if (trimmed === "/quit" || trimmed === "/exit") {
+      throw new Error("__PI_EXIT__");
+    }
 
-  await runtime.search.stop();
-  iface.close();
+    currentTurn = (await runtime.sessionTree.fork(currentTurn, "user", trimmed)).id;
+    await render("Unsupported command", "Use /help for supported commands.");
+  };
+
+  const unsubscribe = runtime.search.onUiInput(async (event) => {
+    const payload = (event ?? {}) as { key?: string; code?: number; text?: string };
+    const key = payload.key ?? "";
+
+    if (key === "backspace") {
+      input = input.slice(0, -1);
+      await render();
+      return;
+    }
+
+    if (key === "enter") {
+      const command = input;
+      input = "";
+      try {
+        await executeCommand(command);
+      } catch (err) {
+        if (err instanceof Error && err.message === "__PI_EXIT__") {
+          await runtime.search.stop();
+          process.exit(0);
+        }
+        await render("Error", String(err));
+      }
+      return;
+    }
+
+    if (key === "char" && payload.text) {
+      input += payload.text;
+      await render();
+    }
+  });
+
+  process.on("SIGINT", async () => {
+    unsubscribe();
+    await runtime.search.stop();
+    process.exit(0);
+  });
+
+  await new Promise<void>(() => {
+    // keep process alive; input is driven by ui.input notifications
+  });
 }
 
 export async function run(argv: string[] = process.argv.slice(2)): Promise<number> {

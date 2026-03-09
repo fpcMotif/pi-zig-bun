@@ -1,6 +1,7 @@
 const std = @import("std");
 const fs = std.fs;
 const mem = std.mem;
+const tui = @import("tui/mod.zig");
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.AlignedManaged;
@@ -837,23 +838,102 @@ fn loweredSlice(allocator: Allocator, input: []const u8) ![]const u8 {
     return out;
 }
 
-fn writeResult(writer: *std.Io.Writer, id: i64, payload: anytype) !void {
-    try writer.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{f}}}\n", .{ id, std.json.fmt(payload, .{}) });
+fn hasRequestId(object: std.json.ObjectMap) bool {
+    return object.get("id") != null;
 }
 
-fn writeError(writer: *std.Io.Writer, id: i64, code: i32, message: []const u8) !void {
+const RpcOutput = struct {
+    allocator: Allocator,
+    stdout: fs.File,
+    stderr: fs.File,
+    mutex: std.Thread.Mutex = .{},
+
+    fn writeLine(self: *RpcOutput, line: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.stdout.writeAll(line);
+    }
+
+    fn log(self: *RpcOutput, message: []const u8) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.stderr.writeAll(message) catch {};
+        self.stderr.writeAll("\n") catch {};
+    }
+};
+
+fn writeResult(output: *RpcOutput, id: i64, payload: anytype) !void {
+    const line = try std.fmt.allocPrint(output.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{f}}}\n", .{ id, std.json.fmt(payload, .{}) });
+    defer output.allocator.free(line);
+    try output.writeLine(line);
+}
+
+fn writeError(output: *RpcOutput, id: i64, code: i32, message: []const u8) !void {
     const payload = struct {
         code: i32,
         message: []const u8,
     }{ .code = code, .message = message };
 
-    try writer.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"error\":{f}}}\n", .{ id, std.json.fmt(payload, .{}) });
+    const line = try std.fmt.allocPrint(output.allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"error\":{f}}}\n", .{ id, std.json.fmt(payload, .{}) });
+    defer output.allocator.free(line);
+    try output.writeLine(line);
+}
+
+fn writeNotification(output: *RpcOutput, method: []const u8, payload: anytype) !void {
+    const line = try std.fmt.allocPrint(output.allocator, "{{\"jsonrpc\":\"2.0\",\"method\":\"{s}\",\"params\":{f}}}\n", .{ method, std.json.fmt(payload, .{}) });
+    defer output.allocator.free(line);
+    try output.writeLine(line);
+}
+
+const TuiInputContext = struct {
+    output: *RpcOutput,
+    running: *bool,
+};
+
+fn tuiInputThread(ctx: *TuiInputContext) void {
+    const tty = fs.openFileAbsolute("/dev/tty", .{ .mode = .read_only }) catch return;
+    defer tty.close();
+
+    var term = std.posix.tcgetattr(tty.handle) catch return;
+    const original = term;
+    term.lflag.ICANON = false;
+    term.lflag.ECHO = false;
+    term.cc[@intFromEnum(std.posix.V.TIME)] = 0;
+    term.cc[@intFromEnum(std.posix.V.MIN)] = 1;
+    std.posix.tcsetattr(tty.handle, .FLUSH, term) catch return;
+    defer std.posix.tcsetattr(tty.handle, .FLUSH, original) catch {};
+
+    var buf: [1]u8 = undefined;
+    while (ctx.running.*) {
+        const n = tty.read(buf[0..]) catch break;
+        if (n == 0) continue;
+        const code = buf[0];
+        const key = switch (code) {
+            13, 10 => "enter",
+            127 => "backspace",
+            9 => "tab",
+            27 => "escape",
+            else => if (std.ascii.isPrint(code)) "char" else "control",
+        };
+
+        const payload = struct {
+            key: []const u8,
+            code: u8,
+            text: []const u8,
+        }{ .key = key, .code = code, .text = if (std.ascii.isPrint(code)) &[_]u8{code} else "" };
+
+        writeNotification(ctx.output, "ui.input", payload) catch {
+            ctx.output.log("failed to write ui.input notification");
+            break;
+        };
+    }
 }
 
 fn handleRequest(
     allocator: Allocator,
     state: *SearchState,
-    writer: *std.Io.Writer,
+    output: *RpcOutput,
+    tui_state: *tui.TuiState,
     line: []const u8,
 ) !void {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
@@ -861,20 +941,37 @@ fn handleRequest(
     };
     defer parsed.deinit();
 
-    if (parsed.value != .object) {
-        return;
-    }
+    if (parsed.value != .object) return;
 
     const object = parsed.value.object;
+    const has_id = hasRequestId(object);
     const id = getRequestId(object);
     const method_value = object.get("method") orelse return;
     if (method_value != .string) {
-        try writeError(writer, id, -32600, "invalid method");
+        if (has_id) try writeError(output, id, -32600, "invalid method");
+        return;
+    }
+
+    if (std.mem.eql(u8, method_value.string, "ui.update")) {
+        const params: ?std.json.ObjectMap = if (object.get("params")) |value| switch (value) {
+            .object => value.object,
+            else => null,
+        } else null;
+        try tui_state.applyUpdate(params);
+        const tty = fs.openFileAbsolute("/dev/tty", .{ .mode = .write_only }) catch null;
+        if (tty) |file| {
+            defer file.close();
+            var write_buf: [4096]u8 = undefined;
+            var out = file.writer(&write_buf);
+            try tui_state.render(&out.interface);
+            try out.interface.flush();
+        }
+        if (has_id) try writeResult(output, id, .{ .ok = true });
         return;
     }
 
     if (std.mem.eql(u8, method_value.string, "ping")) {
-        try writeResult(writer, id, "pong");
+        if (has_id) try writeResult(output, id, "pong");
         return;
     }
 
@@ -892,14 +989,9 @@ fn handleRequest(
             root: []const u8,
             file_count: usize,
             elapsed_ms: i64,
-        }{
-            .ok = true,
-            .root = state.root orelse "",
-            .file_count = fileSearchStats(state),
-            .elapsed_ms = elapsed_ms,
-        };
+        }{ .ok = true, .root = state.root orelse "", .file_count = fileSearchStats(state), .elapsed_ms = elapsed_ms };
 
-        try writeResult(writer, id, payload);
+        if (has_id) try writeResult(output, id, payload);
         return;
     }
 
@@ -911,14 +1003,14 @@ fn handleRequest(
 
         const response = searchFiles(allocator, state, params) catch |err| {
             if (err == error.OutOfMemory) return;
-            try writeError(writer, id, -32603, "search failed");
+            if (has_id) try writeError(output, id, -32603, "search failed");
             return;
         };
         const results = response.results;
         const query = response.query;
         errdefer allocator.free(results);
         errdefer allocator.free(query);
-        try writeResult(writer, id, response);
+        if (has_id) try writeResult(output, id, response);
         allocator.free(query);
         allocator.free(results);
         return;
@@ -932,20 +1024,16 @@ fn handleRequest(
 
         const response = searchGrep(allocator, state, params) catch |err| {
             if (err == error.OutOfMemory) return;
-            try writeError(writer, id, -32603, "grep failed");
+            if (has_id) try writeError(output, id, -32603, "grep failed");
             return;
         };
         const matches = response.matches;
         errdefer {
-            for (matches) |match| {
-                allocator.free(match.text);
-            }
+            for (matches) |match| allocator.free(match.text);
             allocator.free(matches);
         }
-        try writeResult(writer, id, response);
-        for (matches) |match| {
-            allocator.free(match.text);
-        }
+        if (has_id) try writeResult(output, id, response);
+        for (matches) |match| allocator.free(match.text);
         allocator.free(matches);
         return;
     }
@@ -956,48 +1044,48 @@ fn handleRequest(
             file_count: usize,
             indexed: bool,
         }{ .root = state.root orelse "", .file_count = fileSearchStats(state), .indexed = state.root != null };
-        try writeResult(writer, id, payload);
+        if (has_id) try writeResult(output, id, payload);
         return;
     }
 
-    try writeError(writer, id, -32601, "method not found");
+    if (has_id) try writeError(output, id, -32601, "method not found");
 }
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        _ = gpa.deinit();
-    }
+    defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
     var state = SearchState.init(allocator);
     defer state.deinit();
 
+    var tui_state = tui.TuiState.init(allocator);
+    defer tui_state.deinit();
+
     const cwd = try fs.cwd().realpathAlloc(allocator, ".");
     defer allocator.free(cwd);
     try state.ensureIndex(cwd);
 
+    var output = RpcOutput{ .allocator = allocator, .stdout = fs.File.stdout(), .stderr = fs.File.stderr() };
+
+    var running = true;
+    var input_ctx = TuiInputContext{ .output = &output, .running = &running };
+    const input_thread = std.Thread.spawn(.{}, tuiInputThread, .{&input_ctx}) catch null;
+    defer {
+        running = false;
+        if (input_thread) |t| t.join();
+    }
+
     var stdin = fs.File.stdin();
-    var stdout = fs.File.stdout();
     var read_buffer: [4096]u8 = undefined;
     var line_buffer = ArrayList(u8, null).init(allocator);
     defer line_buffer.deinit();
 
-    var write_buffer: [4096]u8 = undefined;
-    var out = stdout.writer(&write_buffer);
-    const out_writer = &out.interface;
-
     while (true) {
         const bytes_read = try stdin.read(read_buffer[0..]);
         if (bytes_read == 0) {
-            if (line_buffer.items.len > 0) {
-                if (line_buffer.items[line_buffer.items.len - 1] == '\r') {
-                    _ = line_buffer.pop();
-                }
-                if (line_buffer.items.len > 0) {
-                    try handleRequest(allocator, &state, out_writer, line_buffer.items);
-                }
-            }
+            if (line_buffer.items.len > 0 and line_buffer.items[line_buffer.items.len - 1] == '\r') _ = line_buffer.pop();
+            if (line_buffer.items.len > 0) try handleRequest(allocator, &state, &output, &tui_state, line_buffer.items);
             break;
         }
 
@@ -1007,13 +1095,8 @@ pub fn main() !void {
             cursor += 1;
 
             if (byte == '\n') {
-                while (line_buffer.items.len > 0 and (line_buffer.getLast() == '\r')) {
-                    _ = line_buffer.pop();
-                }
-
-                if (line_buffer.items.len > 0) {
-                    try handleRequest(allocator, &state, out_writer, line_buffer.items);
-                }
+                while (line_buffer.items.len > 0 and line_buffer.getLast() == '\r') _ = line_buffer.pop();
+                if (line_buffer.items.len > 0) try handleRequest(allocator, &state, &output, &tui_state, line_buffer.items);
                 line_buffer.clearRetainingCapacity();
                 continue;
             }
@@ -1021,6 +1104,4 @@ pub fn main() !void {
             try line_buffer.append(byte);
         }
     }
-
-    try out_writer.flush();
 }

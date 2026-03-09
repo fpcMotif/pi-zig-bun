@@ -98,6 +98,21 @@ export class SearchClient {
     return response;
   }
 
+
+  public onUiInput(handler: (event: unknown) => void): () => void {
+    return this.bridge.onNotification("ui.input", handler);
+  }
+
+  public async updateUi(state: {
+    title?: string;
+    status?: string;
+    body?: string;
+    prompt?: string;
+    input?: string;
+  }): Promise<void> {
+    await this.bridge.notify("ui.update", state);
+  }
+
   public async stop(): Promise<void> {
     await this.bridge.stop();
   }
