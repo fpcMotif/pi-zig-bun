@@ -69,6 +69,12 @@ jobs:
       - name: Build Zig backend
         run: zig build
 
+      - name: Run Zig unit tests
+        run: bun run test:zig
+
+      - name: Run Bun unit/integration tests
+        run: bun run test
+
       - name: Install or ensure prek
         run: |
           if ! command -v prek >/dev/null 2>&1; then
@@ -82,3 +88,6 @@ jobs:
 
       - name: Run search regression checks
         run: bun run ci:search-regression
+
+      - name: Run search benchmark gate
+        run: bun run bench:search

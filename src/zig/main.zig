@@ -1024,3 +1024,64 @@ pub fn main() !void {
 
     try out_writer.flush();
 }
+
+test "levenshteinLimited supports fuzzy matching boundaries" {
+    const allocator = std.testing.allocator;
+
+    try std.testing.expectEqual(@as(?usize, 1), levenshteinLimited(allocator, "kitten", "sitten", 2));
+    try std.testing.expectEqual(@as(?usize, null), levenshteinLimited(allocator, "kitten", "dog", 2));
+}
+
+test "shouldIgnorePath respects loaded ignore patterns" {
+    var patterns = ArrayList([]const u8, null).init(std.testing.allocator);
+    defer patterns.deinit();
+
+    try patterns.append("dist");
+    try patterns.append("coverage");
+
+    try std.testing.expect(shouldIgnorePath("dist/main.js", &patterns));
+    try std.testing.expect(shouldIgnorePath("coverage/index.html", &patterns));
+    try std.testing.expect(!shouldIgnorePath("src/main.zig", &patterns));
+}
+
+test "fileHitLessThan ranks by score then recency" {
+    const older = SearchEntry{
+        .abs_path = "a",
+        .rel_path = "a",
+        .rel_path_lower = "a",
+        .file_name = "a",
+        .file_name_lower = "a",
+        .modified_ms = 1,
+        .size = 1,
+    };
+    const newer = SearchEntry{
+        .abs_path = "b",
+        .rel_path = "b",
+        .rel_path_lower = "b",
+        .file_name = "b",
+        .file_name_lower = "b",
+        .modified_ms = 2,
+        .size = 1,
+    };
+
+    try std.testing.expect(fileHitLessThan({}, .{ .entry = newer, .score = 20, .match_type = "prefix", .rank = 0 }, .{ .entry = older, .score = 10, .match_type = "prefix", .rank = 0 }));
+    try std.testing.expect(fileHitLessThan({}, .{ .entry = newer, .score = 20, .match_type = "prefix", .rank = 0 }, .{ .entry = older, .score = 20, .match_type = "prefix", .rank = 0 }));
+}
+
+test "handleRequest responds for ping and unknown methods" {
+    const allocator = std.testing.allocator;
+    var state = SearchState.init(allocator);
+    defer state.deinit();
+
+    var buffer: [4096]u8 = undefined;
+    var out_stream = std.io.fixedBufferStream(&buffer);
+    var out = out_stream.writer();
+    const writer = &out;
+
+    try handleRequest(allocator, &state, writer, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}");
+    try handleRequest(allocator, &state, writer, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"missing\"}");
+
+    const written = out_stream.getWritten();
+    try std.testing.expect(mem.indexOf(u8, written, "\"result\":\"pong\"") != null);
+    try std.testing.expect(mem.indexOf(u8, written, "\"error\":") != null);
+}

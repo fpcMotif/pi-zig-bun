@@ -1,0 +1,4 @@
+[
+  {"query":"kitten","candidate":"sitten","maxTypos":2,"expected":1},
+  {"query":"alpha","candidate":"omega","maxTypos":1,"expected":null}
+]

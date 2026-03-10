@@ -204,13 +204,8 @@ export class SearchBridge {
   }
 
   public async call<T>(method: string, params: unknown = undefined): Promise<T> {
-    if (this.started) {
-      await this.stop();
-    }
-    await this.start();
-
-    if (this.pending.size !== 0) {
-      throw new Error("search bridge is currently processing another request");
+    if (!this.started) {
+      await this.start();
     }
 
     const id = this.nextRequestId++;
@@ -235,7 +230,6 @@ export class SearchBridge {
 
       try {
         this.write(payload);
-        this.proc?.stdin?.end();
       } catch (err) {
         clearTimeout(timeoutHandle);
         this.pending.delete(id);
