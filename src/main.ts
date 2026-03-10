@@ -8,6 +8,7 @@ import { MemoryToolRegistry, type Tool } from "./tools/types";
 import { builtinTools } from "./tools/builtin";
 import { CapabilityManager, type ToolResult } from "./permissions";
 import { loadSkills } from "./extensions/loader";
+import { UIBridge } from "./ui/bridge";
 
 interface AppRuntime {
   search: SearchClient;
@@ -57,6 +58,8 @@ async function runGrepCommand(runtime: AppRuntime, query: string, limit: number,
 }
 
 async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void> {
+  const uiBridge = new UIBridge(process.cwd());
+  await uiBridge.start();
   const iface = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -69,12 +72,23 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
   process.stdout.write("pi-zig-bun interactive\n");
   process.stdout.write("Type /help for commands.\n");
 
+  const offInput = uiBridge.onInput((event) => {
+    if (json) {
+      console.log(JSON.stringify({ type: "ui.input", event }));
+    }
+  });
+  await uiBridge.update("interactive:start");
+
   for await (const line of iface) {
     const trimmed = line.trim();
     if (!trimmed) {
       iface.prompt();
       continue;
     }
+
+    await uiBridge.sendInput({ type: "text", text: trimmed });
+    await uiBridge.sendInput({ type: "enter" });
+    await uiBridge.update(`interactive:line:${trimmed}`);
 
     if (trimmed === "/quit" || trimmed === "/exit") {
       break;
@@ -121,6 +135,8 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
     iface.prompt();
   }
 
+  offInput();
+  await uiBridge.stop();
   await runtime.search.stop();
   iface.close();
 }

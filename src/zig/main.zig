@@ -6,6 +6,7 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.AlignedManaged;
 
 const max_file_read_bytes: usize = 512 * 1024; // Keep grep scanning cheap and responsive.
+const tui = @import("tui/state.zig");
 
 const SearchEntry = struct {
     abs_path: []const u8,
@@ -850,9 +851,24 @@ fn writeError(writer: *std.Io.Writer, id: i64, code: i32, message: []const u8) !
     try writer.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"error\":{f}}}\n", .{ id, std.json.fmt(payload, .{}) });
 }
 
+fn writeErrorWithData(writer: *std.Io.Writer, id: i64, code: i32, message: []const u8, data: anytype) !void {
+    const payload = struct {
+        code: i32,
+        message: []const u8,
+        data: @TypeOf(data),
+    }{ .code = code, .message = message, .data = data };
+
+    try writer.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"error\":{f}}}\n", .{ id, std.json.fmt(payload, .{}) });
+}
+
+fn writeNotification(writer: *std.Io.Writer, method: []const u8, params: anytype) !void {
+    try writer.print("{{\"jsonrpc\":\"2.0\",\"method\":\"{s}\",\"params\":{f}}}\n", .{ method, std.json.fmt(params, .{}) });
+}
+
 fn handleRequest(
     allocator: Allocator,
     state: *SearchState,
+    tui_state: *tui.TuiState,
     writer: *std.Io.Writer,
     line: []const u8,
 ) !void {
@@ -960,6 +976,56 @@ fn handleRequest(
         return;
     }
 
+    if (std.mem.eql(u8, method_value.string, "ui.update")) {
+        const params: ?std.json.ObjectMap = if (object.get("params")) |value| switch (value) {
+            .object => value.object,
+            else => null,
+        } else null;
+
+        const view = if (params) |value| getString(value, "view") orelse "" else "";
+        try tui_state.updateView(view);
+
+        const payload = struct {
+            ok: bool,
+            view: []const u8,
+            queued_inputs: usize,
+        }{ .ok = true, .view = tui_state.last_view, .queued_inputs = tui_state.input_events.items.len };
+        try writeResult(writer, id, payload);
+        return;
+    }
+
+    if (std.mem.eql(u8, method_value.string, "ui.input")) {
+        const params: ?std.json.ObjectMap = if (object.get("params")) |value| switch (value) {
+            .object => value.object,
+            else => null,
+        } else null;
+
+        const event_type = if (params) |value| getString(value, "type") orelse "" else "";
+        const text = if (params) |value| getString(value, "text") orelse "" else "";
+
+        const is_known = std.mem.eql(u8, event_type, "enter") or std.mem.eql(u8, event_type, "text");
+        if (!is_known) {
+            const error_data = struct {
+                event_type: []const u8,
+                allowed_types: [2][]const u8,
+            }{ .event_type = event_type, .allowed_types = .{ "enter", "text" } };
+            try writeErrorWithData(writer, id, -32602, "invalid ui.input event type", error_data);
+            return;
+        }
+
+        const event = try tui_state.appendInput(event_type, text);
+        const event_payload = struct {
+            event_type: []const u8,
+            text: []const u8,
+            received_ms: i64,
+        }{ .event_type = event.event_type, .text = event.text, .received_ms = event.received_ms };
+
+        try writeNotification(writer, "ui.input", event_payload);
+        const result_payload = struct { ok: bool }{ .ok = true };
+        try writeResult(writer, id, result_payload);
+        return;
+    }
+
     try writeError(writer, id, -32601, "method not found");
 }
 
@@ -972,6 +1038,8 @@ pub fn main() !void {
 
     var state = SearchState.init(allocator);
     defer state.deinit();
+    var tui_state = tui.TuiState.init(allocator);
+    defer tui_state.deinit();
 
     const cwd = try fs.cwd().realpathAlloc(allocator, ".");
     defer allocator.free(cwd);
@@ -995,7 +1063,7 @@ pub fn main() !void {
                     _ = line_buffer.pop();
                 }
                 if (line_buffer.items.len > 0) {
-                    try handleRequest(allocator, &state, out_writer, line_buffer.items);
+                    try handleRequest(allocator, &state, &tui_state, out_writer, line_buffer.items);
                 }
             }
             break;
@@ -1012,7 +1080,7 @@ pub fn main() !void {
                 }
 
                 if (line_buffer.items.len > 0) {
-                    try handleRequest(allocator, &state, out_writer, line_buffer.items);
+                    try handleRequest(allocator, &state, &tui_state, out_writer, line_buffer.items);
                 }
                 line_buffer.clearRetainingCapacity();
                 continue;
