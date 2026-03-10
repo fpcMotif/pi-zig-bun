@@ -46,6 +46,14 @@ describe("parseSse", () => {
     expect(events[0]).toEqual({ data: "line one\nline two\nline three" });
   });
 
+  test("preserves single leading space for indented data fields", async () => {
+    const raw = "data:  indented\n\n";
+    const events = await collectEvents(streamFromChunks([raw]));
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({ data: " indented" });
+  });
+
   test("handles CRLF line endings", async () => {
     const raw = "event: update\r\ndata: payload\r\n\r\n";
     const events = await collectEvents(streamFromChunks([raw]));

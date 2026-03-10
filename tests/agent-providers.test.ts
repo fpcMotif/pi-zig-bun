@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { OpenAIAdapter, AnthropicAdapter, GoogleGenAIAdapter } from "../src/agent/providers";
+import { createAgentFromEnv } from "../src/agent";
 import type { AgentRequest } from "../src/agent/types";
 
 /**
@@ -113,6 +114,108 @@ describe("OpenAIAdapter", () => {
   test("parseChunk returns undefined token when delta has no content", () => {
     const chunk = adapter.exposeParseChunk({ choices: [{ delta: {}, finish_reason: null }] });
     expect(chunk.token).toBeUndefined();
+  });
+});
+
+describe("createAgentFromEnv", () => {
+  function withEnv(temp: Record<string, string | undefined>, fn: () => void): void {
+    const original = new Map<string, string | undefined>();
+    Object.keys(temp).forEach((key) => {
+      original.set(key, process.env[key]);
+    });
+    Object.entries(temp).forEach(([key, value]) => {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    });
+    try {
+      fn();
+    } finally {
+      Object.entries(temp).forEach(([key]) => {
+        const value = original.get(key);
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
+      });
+    }
+  }
+
+  test("uses ANTHROPIC_MAX_TOKENS when provided", () => {
+    withEnv(
+      {
+        PI_AGENT_PROVIDER: "anthropic",
+        ANTHROPIC_API_KEY: "ant-test-key",
+        ANTHROPIC_MODEL: "claude-3-5-sonnet-latest",
+        ANTHROPIC_MAX_TOKENS: "8192",
+      },
+      () => {
+        const adapter = createAgentFromEnv() as unknown as {
+          buildRequest: (input: AgentRequest, stream: boolean) => { init: { body: string } };
+        };
+        const body = JSON.parse(
+          adapter.buildRequest({ messages: [{ role: "user", content: "hi" }] }, false).init.body as string,
+        );
+        expect(body.max_tokens).toBe(8192);
+      },
+    );
+  });
+
+  test("uses default ANTHROPIC_MAX_TOKENS when env var is unset", () => {
+    withEnv(
+      {
+        PI_AGENT_PROVIDER: "anthropic",
+        ANTHROPIC_API_KEY: "ant-test-key",
+        ANTHROPIC_MODEL: "claude-3-5-sonnet-latest",
+      },
+      () => {
+        const adapter = createAgentFromEnv() as unknown as {
+          buildRequest: (input: AgentRequest, stream: boolean) => { init: { body: string } };
+        };
+        const body = JSON.parse(
+          adapter.buildRequest({ messages: [{ role: "user", content: "hi" }] }, false).init.body as string,
+        );
+        expect(body.max_tokens).toBe(4096);
+      },
+    );
+  });
+
+  test("rejects non-positive ANTHROPIC_MAX_TOKENS", () => {
+    withEnv(
+      {
+        PI_AGENT_PROVIDER: "anthropic",
+        ANTHROPIC_API_KEY: "ant-test-key",
+        ANTHROPIC_MAX_TOKENS: "0",
+      },
+      () => {
+        expect(() => createAgentFromEnv()).toThrow("ANTHROPIC_MAX_TOKENS must be a positive integer");
+      },
+    );
+
+    withEnv(
+      {
+        PI_AGENT_PROVIDER: "anthropic",
+        ANTHROPIC_API_KEY: "ant-test-key",
+        ANTHROPIC_MAX_TOKENS: "-10",
+      },
+      () => {
+        expect(() => createAgentFromEnv()).toThrow("ANTHROPIC_MAX_TOKENS must be a positive integer");
+      },
+    );
+
+    withEnv(
+      {
+        PI_AGENT_PROVIDER: "anthropic",
+        ANTHROPIC_API_KEY: "ant-test-key",
+        ANTHROPIC_MAX_TOKENS: "abc",
+      },
+      () => {
+        expect(() => createAgentFromEnv()).toThrow("ANTHROPIC_MAX_TOKENS must be a positive integer");
+      },
+    );
   });
 });
 

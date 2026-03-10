@@ -26,12 +26,24 @@ function readPath(ctx: ToolExecutionContext, input: unknown): string {
     throw new Error("Path traversal detected");
   }
 
-  // Second check: resolve symlinks to catch escapes via symlinked directories.
-  // Only run when the target already exists (writes to new paths are fine).
-  if (existsSync(resolved)) {
-    const realResolved = realpathSync(resolved);
+  // Second check: resolve symlinked ancestors to catch escapes via symlinked directories.
+  // This checks the nearest existing ancestor, so writes to new files are still blocked
+  // if the target path resolves through an escaped symlink.
+  let ancestor = resolved;
+  while (true) {
+    if (existsSync(ancestor)) {
+      break;
+    }
+    const parent = path.dirname(ancestor);
+    if (parent === ancestor) {
+      break;
+    }
+    ancestor = parent;
+  }
+  if (existsSync(ancestor)) {
+    const realAncestor = realpathSync(ancestor);
     const realWorkspace = realpathSync(workspaceRoot);
-    const realRelative = path.relative(realWorkspace, realResolved);
+    const realRelative = path.relative(realWorkspace, realAncestor);
     if (path.isAbsolute(realRelative) || realRelative === ".." || realRelative.startsWith(`..${path.sep}`)) {
       throw new Error("Path traversal detected (symlink escape)");
     }

@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, rm, writeFile, readFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile, mkdir, symlink } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { readTool, writeTool, editTool, bashTool } from "../src/tools/builtin";
@@ -80,6 +80,24 @@ describe("readTool", () => {
   test("rejects absolute path traversal outside cwd", async () => {
     await expect(readTool.execute(makeCtx(tmpDir), { path: "/etc/passwd" })).rejects.toThrow("Path traversal detected");
   });
+
+  test("rejects existing file reached via symlink escape", async () => {
+    const escapedWorkspace = await mkdtemp(path.join(os.tmpdir(), "pi-tool-escape-read-"));
+    const escapedRoot = path.join(escapedWorkspace, "outside");
+    await mkdir(escapedRoot, { recursive: true });
+    const escapedFile = path.join(escapedRoot, "secret.txt");
+    await writeFile(escapedFile, "secret");
+    const linkPath = path.join(tmpDir, "workspace-link");
+    await symlink(escapedRoot, linkPath, "dir");
+
+    try {
+      await expect(
+        readTool.execute(makeCtx(tmpDir), { path: path.join(linkPath, "secret.txt") }),
+      ).rejects.toThrow("Path traversal detected (symlink escape)");
+    } finally {
+      await rm(escapedWorkspace, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -130,6 +148,23 @@ describe("writeTool", () => {
       path: "/etc/passwd",
       content: "hacked",
     })).rejects.toThrow("Path traversal detected");
+  });
+
+  test("rejects new writes through symlink escape", async () => {
+    const escapedWorkspace = await mkdtemp(path.join(os.tmpdir(), "pi-tool-escape-write-"));
+    const escapedRoot = path.join(escapedWorkspace, "outside");
+    await mkdir(escapedRoot, { recursive: true });
+    const linkPath = path.join(tmpDir, "workspace-link");
+    await symlink(escapedRoot, linkPath, "dir");
+
+    await expect(
+      writeTool.execute(makeCtx(tmpDir), {
+        path: path.join(linkPath, "new.txt"),
+        content: "nope",
+      }),
+    ).rejects.toThrow("Path traversal detected (symlink escape)");
+
+    await rm(escapedWorkspace, { recursive: true, force: true });
   });
 });
 
@@ -200,6 +235,26 @@ describe("editTool", () => {
       from: "a",
       to: "b",
     })).rejects.toThrow("Path traversal detected");
+
+    const escapedWorkspace = await mkdtemp(path.join(os.tmpdir(), "pi-tool-escape-edit-"));
+    const escapedRoot = path.join(escapedWorkspace, "outside");
+    await mkdir(escapedRoot, { recursive: true });
+    const escapedFile = path.join(escapedRoot, "file.txt");
+    await writeFile(escapedFile, "before");
+    const linkPath = path.join(tmpDir, "workspace-link");
+    await symlink(escapedRoot, linkPath, "dir");
+
+    await expect(
+      editTool.execute(makeCtx(tmpDir), {
+        path: path.join(linkPath, "file.txt"),
+        from: "before",
+        to: "after",
+      }),
+    ).rejects.toThrow("Path traversal detected (symlink escape)");
+
+    const contents = await readFile(escapedFile, "utf8");
+    expect(contents).toBe("before");
+    await rm(escapedWorkspace, { recursive: true, force: true });
   });
 });
 
