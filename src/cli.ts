@@ -118,10 +118,15 @@ export function usage(): string {
     "  -r, --root-session <id>    Continue from a branch root session",
     "",
     "Interactive mode (default):",
+    "  Prompts without /command are sent to the configured LLM provider",
     "  /search <query>            Run file search",
     "  /grep <query>             Run grep-style search",
     "  /tree                      Show session tree heads",
     "  /help                      Show help",
     "  /quit                      Exit",
+    "",
+    "Provider config:",
+    "  Set PI_PROVIDER=(openai|anthropic|google)",
+    "  Optional file: .pi/providers.json",
   ].join("\n");
 }

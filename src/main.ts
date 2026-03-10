@@ -6,13 +6,16 @@ import { parseCli, usage } from "./cli";
 import { SessionStore, SessionTree } from "./session/tree";
 import { MemoryToolRegistry, type Tool } from "./tools/types";
 import { builtinTools } from "./tools/builtin";
-import { CapabilityManager, type ToolResult } from "./permissions";
+import { CapabilityManager } from "./permissions";
 import { loadSkills } from "./extensions/loader";
+import { createProviderClient, ProviderError } from "./providers";
 
 interface AppRuntime {
   search: SearchClient;
   sessionTree: SessionTree;
   capabilities: CapabilityManager;
+  provider: ReturnType<typeof createProviderClient>["client"];
+  providerConfig: ReturnType<typeof createProviderClient>["config"];
 }
 
 function registerBuiltinTools(registry: MemoryToolRegistry): void {
@@ -67,7 +70,9 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
   let currentTurn = root.id;
 
   process.stdout.write("pi-zig-bun interactive\n");
+  process.stdout.write(`Provider: ${runtime.providerConfig.provider}\n`);
   process.stdout.write("Type /help for commands.\n");
+  iface.prompt();
 
   for await (const line of iface) {
     const trimmed = line.trim();
@@ -116,8 +121,42 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
       continue;
     }
 
-    console.log("Unsupported command. Use /help for supported commands.");
+    if (trimmed.startsWith("/")) {
+      console.log("Unsupported command. Use /help for supported commands.");
+      currentTurn = (await runtime.sessionTree.fork(currentTurn, "user", trimmed)).id;
+      iface.prompt();
+      continue;
+    }
+
     currentTurn = (await runtime.sessionTree.fork(currentTurn, "user", trimmed)).id;
+    let assistantText = "";
+    let assistantMetadata: Record<string, unknown> | undefined;
+
+    try {
+      for await (const chunk of runtime.provider.send(trimmed)) {
+        if (chunk.type === "token") {
+          assistantText += chunk.token;
+          process.stdout.write(chunk.token);
+        } else {
+          assistantMetadata = { ...chunk.metadata };
+        }
+      }
+      process.stdout.write("\n");
+    } catch (error) {
+      const providerError = error instanceof ProviderError ? error : new ProviderError("Provider failed", {
+        provider: runtime.provider.name,
+        code: "unknown",
+        retriable: false,
+        cause: error,
+      });
+      console.error(`\nProvider error [${providerError.details.code}]: ${providerError.message}`);
+      assistantText = `Provider error: ${providerError.message}`;
+      assistantMetadata = {
+        error: providerError.details,
+      };
+    }
+
+    currentTurn = (await runtime.sessionTree.fork(currentTurn, "assistant", assistantText, assistantMetadata)).id;
     iface.prompt();
   }
 
@@ -153,11 +192,14 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
     path.join(args.cwd, "skills"),
     path.join(process.cwd(), ".pi", "skills"),
   ]);
+  const providerResult = createProviderClient(args.cwd);
 
   const runtime: AppRuntime = {
     search,
     sessionTree: new SessionTree(new SessionStore(args.cwd)),
     capabilities,
+    provider: providerResult.client,
+    providerConfig: providerResult.config,
   };
 
   switch (args.command) {

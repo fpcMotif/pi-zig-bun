@@ -77,7 +77,12 @@ export class SessionStore {
     };
   }
 
-  public async appendTurn(parentId: string, role: SessionTurn["role"], content: string): Promise<SessionTurn> {
+  public async appendTurn(
+    parentId: string,
+    role: SessionTurn["role"],
+    content: string,
+    metadata?: Record<string, unknown>,
+  ): Promise<SessionTurn> {
     const all = await this.allTurns();
     const parent = all.find((item) => item.id === parentId);
     if (!parent) {
@@ -91,14 +96,20 @@ export class SessionStore {
       role,
       content,
       createdAt: new Date().toISOString(),
+      metadata,
     };
 
     await this.addTurn(turn);
     return turn;
   }
 
-  public async branch(leafId: string, role: SessionTurn["role"], content: string): Promise<SessionTurn> {
-    return this.appendTurn(leafId, role, content);
+  public async branch(
+    leafId: string,
+    role: SessionTurn["role"],
+    content: string,
+    metadata?: Record<string, unknown>,
+  ): Promise<SessionTurn> {
+    return this.appendTurn(leafId, role, content, metadata);
   }
 
   public async getTurn(id: string): Promise<SessionTurn | undefined> {
@@ -148,8 +159,13 @@ export class SessionTree {
     return root;
   }
 
-  public async fork(leafId: string, role: SessionTurn["role"], content: string): Promise<SessionTurn> {
-    return this.store.branch(leafId, role, content);
+  public async fork(
+    leafId: string,
+    role: SessionTurn["role"],
+    content: string,
+    metadata?: Record<string, unknown>,
+  ): Promise<SessionTurn> {
+    return this.store.branch(leafId, role, content, metadata);
   }
 
   public async tree(): Promise<SessionTurn[]> {

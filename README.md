@@ -60,3 +60,27 @@ CACHE_VERSION: v3
 
 This forces fresh cache entries on the next run.
 
+
+## LLM provider pipeline
+
+Interactive mode now routes plain prompts through a pluggable provider client and streams tokens as they arrive.
+
+Provider selection can be changed without code edits:
+
+- Environment variable: `PI_PROVIDER=openai|anthropic|google`
+- Optional config file: `.pi/providers.json`
+
+Example config:
+
+```json
+{
+  "provider": "anthropic",
+  "timeoutMs": 45000,
+  "maxRetries": 2,
+  "anthropic": {
+    "model": "claude-3-5-haiku-latest"
+  }
+}
+```
+
+API keys are read from environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY`).
