@@ -56,6 +56,15 @@ async function runGrepCommand(runtime: AppRuntime, query: string, limit: number,
   }
 }
 
+function runLoginCommand(json: boolean): void {
+  if (json) {
+    console.log(JSON.stringify({ command: "/login", status: "not_implemented", message: "Auth setup is not implemented yet." }));
+    return;
+  }
+
+  console.log("/login — Auth setup is not implemented yet.");
+}
+
 async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void> {
   const iface = readline.createInterface({
     input: process.stdin,
@@ -96,6 +105,13 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
           console.log(`${head.id} | ${head.createdAt} | ${head.role}`);
         }
       }
+      iface.prompt();
+      continue;
+    }
+
+    if (trimmed === "/login") {
+      runLoginCommand(json);
+      currentTurn = (await runtime.sessionTree.fork(currentTurn, "user", "/login")).id;
       iface.prompt();
       continue;
     }
@@ -196,6 +212,9 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
       }
       const rootTurn = await runtime.sessionTree.history(args.rootSession);
       console.log(JSON.stringify(rootTurn, null, 2));
+      return 0;
+    case "login":
+      runLoginCommand(args.json);
       return 0;
     case "interactive":
     default: {

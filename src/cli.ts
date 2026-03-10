@@ -1,6 +1,7 @@
 export interface ParsedCli {
-  command?: "search" | "grep" | "session" | "tree" | "help" | "interactive";
+  command?: "search" | "grep" | "session" | "tree" | "login" | "help" | "interactive";
   query?: string;
+  print: boolean;
   json: boolean;
   cwd: string;
   limit: number;
@@ -18,6 +19,21 @@ function normalizeCommand(raw: string): ParsedCli["command"] {
       return "session";
     case "tree":
       return "tree";
+    case "login":
+      return "login";
+    default:
+      return undefined;
+  }
+}
+
+function normalizeSlashCommand(raw: string): ParsedCli["command"] {
+  switch (raw) {
+    case "/tree":
+      return "tree";
+    case "/login":
+      return "login";
+    case "/help":
+      return "help";
     default:
       return undefined;
   }
@@ -27,6 +43,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
   let command: ParsedCli["command"];
   let i = 0;
   const options: ParsedCli = {
+    print: false,
     json: false,
     cwd: process.cwd(),
     limit: 50,
@@ -38,8 +55,12 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
     const token = args[i]!;
     if (!token.startsWith("-")) {
       if (!command) {
-        command = normalizeCommand(token);
-        i += 1;
+        const normalized = normalizeCommand(token) ?? normalizeSlashCommand(token);
+        if (normalized) {
+          command = normalized;
+          i += 1;
+          break;
+        }
         break;
       }
       i += 1;
@@ -55,6 +76,10 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
       case "-j":
       case "--json":
         options.json = true;
+        i += 1;
+        continue;
+      case "-p":
+        options.print = true;
         i += 1;
         continue;
       case "-c":
@@ -89,10 +114,18 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
     }
   }
 
-  options.command = options.help ? "help" : command ?? "interactive";
+  if (options.help) {
+    options.command = "help";
+  } else if (command) {
+    options.command = command;
+  } else if (options.print || options.json) {
+    options.command = "search";
+  } else {
+    options.command = "interactive";
+  }
 
   const rest = args.slice(i);
-  if (options.command && options.command !== "help" && options.command !== "interactive") {
+  if (options.command && (options.command === "search" || options.command === "grep")) {
     options.query = rest.join(" ").trim();
   }
 
@@ -102,25 +135,28 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
 export function usage(): string {
   return [
     "Usage:",
-    "  pi-zig-bun [command] [args...]",
-    "",
-    "Commands:",
-    "  search <query>    Search files with typo-tolerant fuzzy matching",
-    "  grep <query>      Search file contents in indexed workspace",
-    "  tree              Show session branch heads",
-    "  session           Alias for session tree operations",
+    "  pi",
+    "  pi -p \"query\"",
+    "  pi --json \"query\"",
+    "  pi /login",
+    "  pi /tree",
+    "  pi search <query>",
     "",
     "Flags:",
-    "  -h, --help                Show help",
-    "  -j, --json                Output JSON responses only",
-    "  -c, --cwd <path>          Workspace root for index and sessions",
-    "  -l, --limit <n>           Max results (default 50)",
+    "  -h, --help                 Show help",
+    "  -p                         One-shot print mode",
+    "  -j, --json                 JSON result mode",
+    "  -c, --cwd <path>           Workspace root for index and sessions",
+    "  -l, --limit <n>            Max results (default 50)",
     "  -r, --root-session <id>    Continue from a branch root session",
     "",
-    "Interactive mode (default):",
+    "Slash commands:",
+    "  /login                     Auth setup",
+    "  /tree                      View session branching history",
+    "",
+    "Interactive mode commands:",
     "  /search <query>            Run file search",
-    "  /grep <query>             Run grep-style search",
-    "  /tree                      Show session tree heads",
+    "  /grep <query>              Run grep-style search",
     "  /help                      Show help",
     "  /quit                      Exit",
   ].join("\n");
