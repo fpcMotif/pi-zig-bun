@@ -20,6 +20,7 @@ export interface ToolRegistry {
   register(tool: Tool): void;
   run<T>(id: string, input: unknown, ctx: ToolExecutionContext): Promise<T>;
   list(): Tool[];
+  unregister?(id: string): void;
 }
 
 export class MemoryToolRegistry implements ToolRegistry {
@@ -48,5 +49,9 @@ export class MemoryToolRegistry implements ToolRegistry {
 
   public list(): Tool[] {
     return [...this.tools.values()] as Tool[];
+  }
+
+  public unregister(id: string): void {
+    this.tools.delete(id);
   }
 }

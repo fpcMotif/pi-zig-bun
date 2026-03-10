@@ -7,7 +7,7 @@ import { SessionStore, SessionTree } from "./session/tree";
 import { MemoryToolRegistry, type Tool } from "./tools/types";
 import { builtinTools } from "./tools/builtin";
 import { CapabilityManager, type ToolResult } from "./permissions";
-import { loadSkills } from "./extensions/loader";
+import { SkillExtensionSystem } from "./extensions/loader";
 
 interface AppRuntime {
   search: SearchClient;
@@ -149,10 +149,12 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
 
   const registry = new MemoryToolRegistry();
   registerBuiltinTools(registry);
-  await loadSkills(registry, [
+  const extensionSystem = new SkillExtensionSystem(registry, [
     path.join(args.cwd, "skills"),
     path.join(process.cwd(), ".pi", "skills"),
   ]);
+  await extensionSystem.loadAll();
+  extensionSystem.startWatching();
 
   const runtime: AppRuntime = {
     search,
@@ -160,7 +162,8 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
     capabilities,
   };
 
-  switch (args.command) {
+  try {
+    switch (args.command) {
     case "search": {
       if (!args.query) {
         console.error("search requires <query>");
@@ -202,6 +205,9 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
       await runInteractive(runtime, args.json);
       return 0;
     }
+    }
+  } finally {
+    await extensionSystem.stopWatching();
   }
 }
 

@@ -3,7 +3,7 @@ import type { Capability } from "../permissions";
 
 export interface SkillContext {
   registerTool: (tool: Tool) => void;
-  registerHook: (name: string, callback: () => void | Promise<void>) => void;
+  registerHook: (name: string, callback: (payload?: unknown) => void | Promise<void>) => void;
   capabilities: {
     require: (capability: Capability, target?: string) => void;
   };
