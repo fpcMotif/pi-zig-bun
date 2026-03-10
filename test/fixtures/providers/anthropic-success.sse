@@ -1,0 +1,9 @@
+event: content_block_delta
+data: {"type":"content_block_delta","delta":{"text":"Hello"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","delta":{"text":" world"}}
+
+event: message_stop
+data: {"type":"message_stop"}
+

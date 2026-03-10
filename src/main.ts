@@ -1,18 +1,22 @@
 import path from "node:path";
 import readline from "node:readline/promises";
 import process from "node:process";
-import { SearchClient } from "./search/client";
 import { parseCli, usage } from "./cli";
-import { SessionStore, SessionTree } from "./session/tree";
-import { MemoryToolRegistry, type Tool } from "./tools/types";
-import { builtinTools } from "./tools/builtin";
-import { CapabilityManager, type ToolResult } from "./permissions";
 import { loadSkills } from "./extensions/loader";
+import { CapabilityManager } from "./permissions";
+import { createProviderClient, resolveProviderRuntimeConfig } from "./providers";
+import type { ProviderClient, ProviderMessage } from "./providers/types";
+import { SearchClient } from "./search/client";
+import { SessionStore, SessionTree } from "./session/tree";
+import { builtinTools } from "./tools/builtin";
+import { MemoryToolRegistry, type Tool } from "./tools/types";
 
 interface AppRuntime {
   search: SearchClient;
   sessionTree: SessionTree;
   capabilities: CapabilityManager;
+  provider: ProviderClient;
+  providerConfig: ReturnType<typeof resolveProviderRuntimeConfig>;
 }
 
 function registerBuiltinTools(registry: MemoryToolRegistry): void {
@@ -67,6 +71,7 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
   let currentTurn = root.id;
 
   process.stdout.write("pi-zig-bun interactive\n");
+  process.stdout.write(`Provider: ${runtime.providerConfig.providerId} | model: ${runtime.providerConfig.model} | api key: ${runtime.providerConfig.apiKeySource}\n`);
   process.stdout.write("Type /help for commands.\n");
 
   for await (const line of iface) {
@@ -116,8 +121,48 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
       continue;
     }
 
-    console.log("Unsupported command. Use /help for supported commands.");
     currentTurn = (await runtime.sessionTree.fork(currentTurn, "user", trimmed)).id;
+    const history = await runtime.sessionTree.history(currentTurn);
+    const messages: ProviderMessage[] = history.map((turn) => ({ role: turn.role, content: turn.content }));
+
+    let assistantText = "";
+    try {
+      for await (const event of runtime.provider.stream({ messages, model: runtime.providerConfig.model })) {
+        if (event.type === "delta") {
+          assistantText += event.token;
+          if (json) {
+            console.log(JSON.stringify(event));
+          } else {
+            process.stdout.write(event.token);
+          }
+          continue;
+        }
+
+        if (event.type === "error") {
+          throw event.error;
+        }
+
+        if (event.type === "done") {
+          if (json) {
+            console.log(JSON.stringify(event));
+          } else {
+            process.stdout.write("\n");
+          }
+        }
+      }
+    } catch (error) {
+      console.error(error);
+      iface.prompt();
+      continue;
+    }
+
+    currentTurn = (
+      await runtime.sessionTree.fork(currentTurn, "assistant", assistantText, {
+        provider: runtime.providerConfig.providerId,
+        model: runtime.providerConfig.model,
+      })
+    ).id;
+
     iface.prompt();
   }
 
@@ -149,15 +194,15 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
 
   const registry = new MemoryToolRegistry();
   registerBuiltinTools(registry);
-  await loadSkills(registry, [
-    path.join(args.cwd, "skills"),
-    path.join(process.cwd(), ".pi", "skills"),
-  ]);
+  await loadSkills(registry, [path.join(args.cwd, "skills"), path.join(process.cwd(), ".pi", "skills")]);
 
+  const providerConfig = resolveProviderRuntimeConfig();
   const runtime: AppRuntime = {
     search,
     sessionTree: new SessionTree(new SessionStore(args.cwd)),
     capabilities,
+    provider: createProviderClient(providerConfig),
+    providerConfig,
   };
 
   switch (args.command) {

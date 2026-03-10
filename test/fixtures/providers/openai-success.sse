@@ -1,0 +1,6 @@
+data: {"id":"1","choices":[{"delta":{"content":"Hello"}}]}
+
+data: {"id":"1","choices":[{"delta":{"content":" world"}}]}
+
+data: [DONE]
+
