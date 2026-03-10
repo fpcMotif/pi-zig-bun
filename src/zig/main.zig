@@ -22,6 +22,9 @@ const SearchState = struct {
     entries: ArrayList(SearchEntry, null),
     ignore_patterns: ArrayList([]const u8, null),
     root: ?[]const u8,
+    ui_mode: []const u8,
+    ui_query: []const u8,
+    ui_cursor: usize,
 
     pub fn init(allocator: Allocator) SearchState {
         return .{
@@ -29,6 +32,9 @@ const SearchState = struct {
             .entries = .init(allocator),
             .ignore_patterns = .init(allocator),
             .root = null,
+            .ui_mode = "",
+            .ui_query = "",
+            .ui_cursor = 0,
         };
     }
 
@@ -37,6 +43,17 @@ const SearchState = struct {
         self.entries.deinit();
         self.ignore_patterns.deinit();
         if (self.root) |root| self.allocator.free(root);
+        if (self.ui_mode.len > 0) self.allocator.free(self.ui_mode);
+        if (self.ui_query.len > 0) self.allocator.free(self.ui_query);
+    }
+
+    pub fn setUiState(self: *SearchState, mode: []const u8, query: []const u8, cursor: usize) !void {
+        if (self.ui_mode.len > 0) self.allocator.free(self.ui_mode);
+        if (self.ui_query.len > 0) self.allocator.free(self.ui_query);
+
+        self.ui_mode = try self.allocator.dupe(u8, mode);
+        self.ui_query = try self.allocator.dupe(u8, query);
+        self.ui_cursor = cursor;
     }
 
     pub fn clearIndex(self: *SearchState) void {
@@ -850,6 +867,10 @@ fn writeError(writer: *std.Io.Writer, id: i64, code: i32, message: []const u8) !
     try writer.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"error\":{f}}}\n", .{ id, std.json.fmt(payload, .{}) });
 }
 
+fn writeNotification(writer: *std.Io.Writer, method: []const u8, payload: anytype) !void {
+    try writer.print("{{\"jsonrpc\":\"2.0\",\"method\":\"{s}\",\"params\":{f}}}\n", .{ method, std.json.fmt(payload, .{}) });
+}
+
 fn handleRequest(
     allocator: Allocator,
     state: *SearchState,
@@ -957,6 +978,48 @@ fn handleRequest(
             indexed: bool,
         }{ .root = state.root orelse "", .file_count = fileSearchStats(state), .indexed = state.root != null };
         try writeResult(writer, id, payload);
+        return;
+    }
+
+    if (std.mem.eql(u8, method_value.string, "ui.update")) {
+        const params = object.get("params") orelse {
+            try writeError(writer, id, -32602, "missing params");
+            return;
+        };
+        if (params != .object) {
+            try writeError(writer, id, -32602, "invalid params");
+            return;
+        }
+
+        const state_value = params.object.get("state") orelse {
+            try writeError(writer, id, -32602, "missing state");
+            return;
+        };
+        if (state_value != .object) {
+            try writeError(writer, id, -32602, "invalid state");
+            return;
+        }
+
+        const mode = getString(state_value.object, "mode") orelse "interactive";
+        const query = getString(state_value.object, "query") orelse "";
+        const cursor = getPositiveUsize(state_value.object, "cursor", query.len);
+        try state.setUiState(mode, query, cursor);
+
+        const result = struct {
+            ok: bool,
+            acceptedAtMs: i64,
+        }{ .ok = true, .acceptedAtMs = std.time.milliTimestamp() };
+        try writeResult(writer, id, result);
+
+        if (query.len > 0) {
+            const input_event = struct {
+                key: []const u8,
+                sequence: []const u8,
+                receivedAtMs: i64,
+            }{ .key = query[query.len - 1 ..], .sequence = query, .receivedAtMs = std.time.milliTimestamp() };
+            try writeNotification(writer, "ui.input", input_event);
+        }
+
         return;
     }
 

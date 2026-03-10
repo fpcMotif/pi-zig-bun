@@ -1,0 +1,17 @@
+{
+  "requests": {
+    "uiUpdate": "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ui.update\",\"params\":{\"state\":{\"mode\":\"interactive\",\"query\":\"abc\",\"cursor\":3}}}",
+    "invalidNoMethod": "{\"jsonrpc\":\"2.0\",\"id\":9,\"params\":{}}"
+  },
+  "responses": {
+    "uiUpdateOk": "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"ok\":true,\"acceptedAtMs\":1710000000000}}",
+    "uiUpdateErr": "{\"jsonrpc\":\"2.0\",\"id\":7,\"error\":{\"code\":-32602,\"message\":\"invalid state\"}}"
+  },
+  "events": {
+    "uiInput": "{\"jsonrpc\":\"2.0\",\"method\":\"ui.input\",\"params\":{\"key\":\"c\",\"sequence\":\"abc\",\"receivedAtMs\":1710000000001}}"
+  },
+  "errors": {
+    "invalidVersion": "{\"jsonrpc\":\"1.0\",\"id\":1,\"result\":{}}",
+    "invalidPayload": "{\"jsonrpc\":\"2.0\",\"id\":1}"
+  }
+}

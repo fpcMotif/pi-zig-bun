@@ -5,6 +5,7 @@ import type {
   SearchFileResultItem,
   SearchGrepResultItem,
 } from "./types";
+import type { UiInputEvent, UiUpdateParams, UiUpdateResult } from "../rpc/types";
 
 export interface SearchFilesOptions {
   limit?: number;
@@ -96,6 +97,14 @@ export class SearchClient {
     }>("search.grep", params);
 
     return response;
+  }
+
+  public async uiUpdate(params: UiUpdateParams): Promise<UiUpdateResult> {
+    return await this.bridge.uiUpdate(params);
+  }
+
+  public onUiInput(listener: (event: UiInputEvent) => void): () => void {
+    return this.bridge.onUiInput(listener);
   }
 
   public async stop(): Promise<void> {

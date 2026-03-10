@@ -1,27 +1,16 @@
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
-
-type RpcId = number;
-
-type RpcRequest = {
-  jsonrpc: "2.0";
-  id: RpcId;
-  method: string;
-  params?: unknown;
-};
-
-type RpcSuccess<T> = {
-  jsonrpc: "2.0";
-  id: RpcId;
-  result: T;
-};
-
-type RpcFailure = {
-  jsonrpc: "2.0";
-  id: RpcId;
-  error: { code: number; message: string };
-};
+import type {
+  RpcFailure,
+  RpcId,
+  RpcNotification,
+  RpcRequest,
+  RpcSuccess,
+  UiInputEvent,
+  UiUpdateParams,
+  UiUpdateResult,
+} from "../rpc/types";
 
 interface PendingCall {
   resolve: (value: unknown) => void;
@@ -35,6 +24,56 @@ export interface SearchBridgeOptions {
   requestTimeoutMs?: number;
 }
 
+export function parseRpcLine(line: string):
+  | RpcSuccess<unknown>
+  | RpcFailure
+  | RpcNotification<unknown>
+  | null {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const payload = JSON.parse(trimmed) as Partial<RpcSuccess<unknown> & RpcFailure & RpcNotification<unknown>>;
+  if (payload.jsonrpc !== "2.0") {
+    throw new Error("invalid jsonrpc version");
+  }
+
+  if (typeof payload.method === "string") {
+    return {
+      jsonrpc: "2.0",
+      method: payload.method,
+      params: payload.params,
+    };
+  }
+
+  if (typeof payload.id !== "number") {
+    throw new Error("invalid rpc id");
+  }
+
+  if (payload.error && typeof payload.error.code === "number" && typeof payload.error.message === "string") {
+    return {
+      jsonrpc: "2.0",
+      id: payload.id,
+      error: payload.error,
+    };
+  }
+
+  if ("result" in payload) {
+    return {
+      jsonrpc: "2.0",
+      id: payload.id,
+      result: payload.result,
+    };
+  }
+
+  throw new Error("invalid rpc payload");
+}
+
+export function formatRpcRequest(payload: RpcRequest<unknown>): string {
+  return `${JSON.stringify(payload)}\n`;
+}
+
 export class SearchBridge {
   private readonly binaryPath: string;
   private readonly workspaceRoot: string;
@@ -44,6 +83,7 @@ export class SearchBridge {
   private nextRequestId = 1;
   private pending = new Map<RpcId, PendingCall>();
   private started = false;
+  private readonly uiInputSubscribers = new Set<(event: UiInputEvent) => void>();
 
   constructor(options: SearchBridgeOptions = {}) {
     this.workspaceRoot = options.workspaceRoot ?? process.cwd();
@@ -69,7 +109,6 @@ export class SearchBridge {
       }
     }
 
-    // keep last candidate for nicer errors while still allowing explicit override.
     return candidates[0]!;
   }
 
@@ -131,8 +170,8 @@ export class SearchBridge {
         for (const call of this.pending.values()) {
           call.reject(err);
         }
-        this.pending.clear();
       }
+      this.pending.clear();
       this.started = false;
     });
 
@@ -159,13 +198,12 @@ export class SearchBridge {
     this.pending.clear();
   }
 
-  private write(payload: RpcRequest): void {
+  private write(payload: RpcRequest<unknown>): void {
     if (!this.proc || !this.proc.stdin) {
       throw new Error("search bridge is not connected");
     }
 
-    const line = `${JSON.stringify(payload)}\n`;
-    const ok = this.proc.stdin.write(line, "utf8");
+    const ok = this.proc.stdin.write(formatRpcRequest(payload), "utf8");
     if (!ok) {
       this.proc.stdin.once("drain", () => {
         this.proc?.stdin?.write("");
@@ -174,47 +212,57 @@ export class SearchBridge {
   }
 
   private handleLine(line: string): void {
-    const trimmed = line.trim();
-    if (!trimmed) {
+    let payload: RpcSuccess<unknown> | RpcFailure | RpcNotification<unknown> | null;
+    try {
+      payload = parseRpcLine(line);
+    } catch {
       return;
     }
 
-    try {
-      const payload = JSON.parse(trimmed) as RpcSuccess<unknown> | RpcFailure;
-      const pending = this.pending.get(payload.id);
-      if (!pending) {
-        return;
-      }
-
-      this.pending.delete(payload.id);
-      if ("error" in payload) {
-        if (pending.timeoutHandle) {
-          clearTimeout(pending.timeoutHandle);
-        }
-        pending.reject(new Error(`${payload.error.code}: ${payload.error.message}`));
-      } else {
-        if (pending.timeoutHandle) {
-          clearTimeout(pending.timeoutHandle);
-        }
-        pending.resolve(payload.result);
-      }
-    } catch {
-      // Ignore malformed lines in non-protocol output.
+    if (!payload) {
+      return;
     }
+
+    if ("method" in payload) {
+      if (payload.method === "ui.input" && payload.params && typeof payload.params === "object") {
+        const event = payload.params as UiInputEvent;
+        for (const subscriber of this.uiInputSubscribers) {
+          subscriber(event);
+        }
+      }
+      return;
+    }
+
+    const pending = this.pending.get(payload.id);
+    if (!pending) {
+      return;
+    }
+
+    this.pending.delete(payload.id);
+    if (pending.timeoutHandle) {
+      clearTimeout(pending.timeoutHandle);
+    }
+
+    if ("error" in payload) {
+      pending.reject(new Error(`${payload.error.code}: ${payload.error.message}`));
+      return;
+    }
+
+    pending.resolve(payload.result);
+  }
+
+  public onUiInput(listener: (event: UiInputEvent) => void): () => void {
+    this.uiInputSubscribers.add(listener);
+    return () => {
+      this.uiInputSubscribers.delete(listener);
+    };
   }
 
   public async call<T>(method: string, params: unknown = undefined): Promise<T> {
-    if (this.started) {
-      await this.stop();
-    }
     await this.start();
 
-    if (this.pending.size !== 0) {
-      throw new Error("search bridge is currently processing another request");
-    }
-
     const id = this.nextRequestId++;
-    const payload: RpcRequest = {
+    const payload: RpcRequest<unknown> = {
       jsonrpc: "2.0",
       id,
       method,
@@ -235,19 +283,15 @@ export class SearchBridge {
 
       try {
         this.write(payload);
-        this.proc?.stdin?.end();
       } catch (err) {
         clearTimeout(timeoutHandle);
         this.pending.delete(id);
         reject(err as Error);
       }
-    }).then((value) => {
-      const call = this.pending.get(id);
-      if (call?.timeoutHandle) {
-        clearTimeout(call.timeoutHandle);
-      }
-      this.pending.delete(id);
-      return value as T;
-    });
+    }) as T;
+  }
+
+  public async uiUpdate(params: UiUpdateParams): Promise<UiUpdateResult> {
+    return await this.call<UiUpdateResult>("ui.update", params);
   }
 }

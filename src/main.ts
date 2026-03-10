@@ -2,6 +2,7 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import process from "node:process";
 import { SearchClient } from "./search/client";
+import type { UiInputEvent } from "./rpc/types";
 import { parseCli, usage } from "./cli";
 import { SessionStore, SessionTree } from "./session/tree";
 import { MemoryToolRegistry, type Tool } from "./tools/types";
@@ -65,12 +66,32 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
 
   const root = await runtime.sessionTree.createRoot("system", "interactive session");
   let currentTurn = root.id;
+  let lastUiInput: UiInputEvent | undefined;
+  const unsubscribeUi = runtime.search.onUiInput((event) => {
+    lastUiInput = event;
+    if (json) {
+      console.log(JSON.stringify({ type: "ui.input", event }));
+    }
+  });
 
   process.stdout.write("pi-zig-bun interactive\n");
   process.stdout.write("Type /help for commands.\n");
 
   for await (const line of iface) {
     const trimmed = line.trim();
+    await runtime.search.uiUpdate({
+      state: {
+        mode: "interactive",
+        query: trimmed,
+        cursor: trimmed.length,
+      },
+    });
+
+    if (lastUiInput && !json) {
+      console.log(`ui.input key=${lastUiInput.key}`);
+      lastUiInput = undefined;
+    }
+
     if (!trimmed) {
       iface.prompt();
       continue;
@@ -121,6 +142,7 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
     iface.prompt();
   }
 
+  unsubscribeUi();
   await runtime.search.stop();
   iface.close();
 }
