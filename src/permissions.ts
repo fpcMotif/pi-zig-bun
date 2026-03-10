@@ -1,3 +1,6 @@
+import { appendFileSync, mkdirSync } from "node:fs";
+import path from "node:path";
+
 export type Capability =
   | "fs.read"
   | "fs.write"
@@ -11,6 +14,18 @@ export interface CapabilityPolicy {
   "fs.execute"?: string[] | "*";
   "net.http"?: string[] | "*";
   "session.access"?: string[] | "*";
+}
+
+export interface AuditRecord {
+  timestamp: string;
+  capability: Capability;
+  resource?: string;
+  caller?: string;
+  outcome: "denied";
+}
+
+export interface CapabilityManagerOptions {
+  auditLogPath?: string;
 }
 
 function patternToRegex(pattern: string): RegExp {
@@ -70,7 +85,14 @@ export class CapabilityManager {
     "session.access": "*",
   };
 
-  constructor(private policy: CapabilityPolicy = {}) {}
+  private readonly auditLogPath: string;
+
+  constructor(
+    private policy: CapabilityPolicy = {},
+    options: CapabilityManagerOptions = {},
+  ) {
+    this.auditLogPath = options.auditLogPath ?? path.join(process.cwd(), ".pi", "audit.log");
+  }
 
   public allowAll(): void {
     this.policy = {
@@ -103,8 +125,15 @@ export class CapabilityManager {
     return pathAllowed(patterns, target);
   }
 
-  public require(capability: Capability, target?: string): void {
+  public require(capability: Capability, target?: string, caller?: string): void {
     if (!this.can(capability, target)) {
+      this.logDenied({
+        timestamp: new Date().toISOString(),
+        capability,
+        resource: target,
+        caller,
+        outcome: "denied",
+      });
       throw new Error(`Capability denied: ${capability}${target ? ` (${target})` : ""}`);
     }
   }
@@ -115,6 +144,15 @@ export class CapabilityManager {
 
   public snapshot(): CapabilityPolicy {
     return { ...this.policy };
+  }
+
+  private logDenied(record: AuditRecord): void {
+    try {
+      mkdirSync(path.dirname(this.auditLogPath), { recursive: true });
+      appendFileSync(this.auditLogPath, `${JSON.stringify(record)}\n`, "utf8");
+    } catch {
+      // best-effort audit logging
+    }
   }
 }
 

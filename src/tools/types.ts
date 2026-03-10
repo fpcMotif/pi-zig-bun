@@ -4,7 +4,7 @@ export interface ToolExecutionContext {
   id: string;
   cwd: string;
   capabilities: {
-    require: (capability: Capability, target?: string) => void;
+    require: (capability: Capability, target?: string, caller?: string) => void;
   };
 }
 
@@ -40,6 +40,7 @@ export class MemoryToolRegistry implements ToolRegistry {
         typeof input === "object" && input !== null && "path" in input
           ? String((input as { path?: string }).path)
           : undefined,
+        `tool:${id}`,
       );
     }
 

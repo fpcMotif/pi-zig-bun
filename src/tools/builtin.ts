@@ -22,7 +22,7 @@ export const readTool: Tool<{ path: string }, ToolResult> = {
   capabilities: ["fs.read"],
   async execute(ctx, input): Promise<ToolResult> {
     const resolved = readPath(ctx, input);
-    ctx.capabilities.require("fs.read", resolved);
+    ctx.capabilities.require("fs.read", resolved, `tool:${ctx.id}:read`);
 
     const stats = statSync(resolved);
     if (stats.size > MAX_READ_BYTES) {
@@ -50,7 +50,7 @@ export const writeTool: Tool<{ path: string; content: string; overwrite?: boolea
   capabilities: ["fs.write"],
   async execute(ctx, input): Promise<ToolResult> {
     const resolved = readPath(ctx, input);
-    ctx.capabilities.require("fs.write", resolved);
+    ctx.capabilities.require("fs.write", resolved, `tool:${ctx.id}:write`);
 
     const dir = path.dirname(resolved);
     mkdirSync(dir, { recursive: true });
@@ -71,8 +71,8 @@ export const editTool: Tool<{ path: string; from: string; to: string }, ToolResu
   capabilities: ["fs.read", "fs.write"],
   async execute(ctx, input): Promise<ToolResult> {
     const resolved = readPath(ctx, input);
-    ctx.capabilities.require("fs.read", resolved);
-    ctx.capabilities.require("fs.write", resolved);
+    ctx.capabilities.require("fs.read", resolved, `tool:${ctx.id}:edit-read`);
+    ctx.capabilities.require("fs.write", resolved, `tool:${ctx.id}:edit-write`);
 
     const payload = readFileSync(resolved, "utf8");
     const { from, to } = input as { from?: string; to?: string };
@@ -107,7 +107,7 @@ export const bashTool: Tool<{ command: string }, ToolResult> = {
       throw new Error("bash requires { command }");
     }
 
-    ctx.capabilities.require("fs.execute", ctx.cwd);
+    ctx.capabilities.require("fs.execute", ctx.cwd, `tool:${ctx.id}:bash`);
     const output = execSync(command, {
       cwd: ctx.cwd,
       encoding: "utf8",
