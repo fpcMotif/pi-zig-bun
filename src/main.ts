@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline/promises";
 import process from "node:process";
@@ -6,13 +7,20 @@ import { parseCli, usage } from "./cli";
 import { SessionStore, SessionTree } from "./session/tree";
 import { MemoryToolRegistry, type Tool } from "./tools/types";
 import { builtinTools } from "./tools/builtin";
-import { CapabilityManager, type ToolResult } from "./permissions";
+import { CapabilityManager } from "./permissions";
 import { loadSkills } from "./extensions/loader";
 
 interface AppRuntime {
   search: SearchClient;
   sessionTree: SessionTree;
   capabilities: CapabilityManager;
+  cwd: string;
+}
+
+interface AuthConfig {
+  provider: string;
+  apiKey: string;
+  updatedAt: string;
 }
 
 function registerBuiltinTools(registry: MemoryToolRegistry): void {
@@ -56,6 +64,65 @@ async function runGrepCommand(runtime: AppRuntime, query: string, limit: number,
   }
 }
 
+function authConfigPath(cwd: string): string {
+  return path.join(cwd, ".pi", "auth.json");
+}
+
+async function saveAuthConfig(cwd: string, config: AuthConfig): Promise<void> {
+  const filePath = authConfigPath(cwd);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, JSON.stringify(config, null, 2) + "\n", "utf8");
+}
+
+async function loadAuthConfig(cwd: string): Promise<AuthConfig | undefined> {
+  const filePath = authConfigPath(cwd);
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw) as Partial<AuthConfig>;
+    if (!parsed.provider || !parsed.apiKey || !parsed.updatedAt) {
+      return undefined;
+    }
+
+    return parsed as AuthConfig;
+  } catch {
+    return undefined;
+  }
+}
+
+async function runLoginCommand(cwd: string, json: boolean): Promise<void> {
+  const iface = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  const previous = await loadAuthConfig(cwd);
+  const providerInput = await iface.question(`Provider${previous ? ` [${previous.provider}]` : ""}: `);
+  const keyInput = await iface.question("API key (or set PI_API_KEY env): ");
+
+  iface.close();
+
+  const provider = providerInput.trim() || previous?.provider || "openai";
+  const apiKey = keyInput.trim() || process.env.PI_API_KEY || previous?.apiKey || "";
+
+  if (!apiKey) {
+    throw new Error("Missing API key. Provide one interactively or via PI_API_KEY.");
+  }
+
+  const config: AuthConfig = {
+    provider,
+    apiKey,
+    updatedAt: new Date().toISOString(),
+  };
+
+  await saveAuthConfig(cwd, config);
+  if (json) {
+    console.log(JSON.stringify({ ok: true, provider, path: authConfigPath(cwd) }, null, 2));
+    return;
+  }
+
+  console.log(`Saved auth config for provider \"${provider}\" at ${authConfigPath(cwd)}`);
+}
+
 async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void> {
   const iface = readline.createInterface({
     input: process.stdin,
@@ -66,7 +133,7 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
   const root = await runtime.sessionTree.createRoot("system", "interactive session");
   let currentTurn = root.id;
 
-  process.stdout.write("pi-zig-bun interactive\n");
+  process.stdout.write("pi interactive\n");
   process.stdout.write("Type /help for commands.\n");
 
   for await (const line of iface) {
@@ -100,6 +167,12 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
       continue;
     }
 
+    if (trimmed === "/login") {
+      await runLoginCommand(runtime.cwd, json);
+      iface.prompt();
+      continue;
+    }
+
     if (trimmed.startsWith("/search ")) {
       const query = trimmed.slice("/search ".length).trim();
       await runSearchCommand(runtime, query, 100, false);
@@ -128,6 +201,12 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
 export async function run(argv: string[] = process.argv.slice(2)): Promise<number> {
   const args = parseCli(argv);
 
+  if (args.parseError) {
+    console.error(args.parseError);
+    console.error(usage());
+    return 2;
+  }
+
   if (args.help) {
     console.log(usage());
     return 0;
@@ -135,6 +214,11 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
 
   if (!path.isAbsolute(args.cwd)) {
     args.cwd = path.join(process.cwd(), args.cwd);
+  }
+
+  if (args.command === "login") {
+    await runLoginCommand(args.cwd, args.json);
+    return 0;
   }
 
   const search = SearchClient.from({ workspaceRoot: args.cwd });
@@ -158,6 +242,7 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
     search,
     sessionTree: new SessionTree(new SessionStore(args.cwd)),
     capabilities,
+    cwd: args.cwd,
   };
 
   switch (args.command) {

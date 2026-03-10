@@ -86,11 +86,12 @@ Extensions are **TypeScript skills** loaded by Bun.
 
 ---
 
-## 6. CLI Command Surface
+## 6. CLI Command Surface (`pi`)
 
-- `pi` — Interactive TUI mode.
-- `pi -p "query"` — One-shot print mode.
-- `pi --json "query"` — JSON result mode.
-- `pi /login` — Auth setup.
-- `pi /tree` — View session branching history.
-- `pi search <query>` — CLI wrapper for the Zig search engine.
+- `pi` — Interactive mode.
+- `pi -p "query"` — One-shot print mode (equivalent to `pi search "query"`).
+- `pi --json "query"` — One-shot JSON search response.
+- `pi /login` or `pi login` — Auth setup and persisted config update.
+- `pi /tree` or `pi tree` — View session branching history.
+- `pi search <query>` — Explicit CLI search command.
+- Backward-compatible aliases such as `session` and `tree` remain available.
