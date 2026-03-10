@@ -1,0 +1,54 @@
+// Bun Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`CLI e2e routing snapshots search command snapshot 1`] = `
+{
+  "exitCode": 0,
+  "stderr": [],
+  "stdout": [
+    "  97  src/main.ts  (exact)",
+    "  92  src/cli.ts  (fuzzy)",
+  ],
+}
+`;
+
+exports[`CLI e2e routing snapshots grep command snapshot 1`] = `
+{
+  "exitCode": 0,
+  "stderr": [],
+  "stdout": [
+    "src/main.ts:42:3  const q = needle;",
+  ],
+}
+`;
+
+exports[`CLI e2e routing snapshots tree command snapshot 1`] = `
+{
+  "exitCode": 0,
+  "stderr": [],
+  "stdout": [
+    "Session heads: 1",
+    "head-1 | parent=<root> | 2026-01-01T00:00:00Z",
+  ],
+}
+`;
+
+exports[`CLI e2e routing snapshots -p one-shot print mode snapshot 1`] = `
+{
+  "exitCode": 0,
+  "stderr": [],
+  "stdout": [
+    "  97  src/main.ts  (exact)",
+    "  92  src/cli.ts  (fuzzy)",
+  ],
+}
+`;
+
+exports[`CLI e2e routing snapshots --json one-shot mode snapshot 1`] = `
+{
+  "exitCode": 0,
+  "stderr": [],
+  "stdout": [
+    "{"query":"needle","results":[{"path":"src/main.ts","score":97,"matchType":"exact"},{"path":"src/cli.ts","score":92,"matchType":"fuzzy"}]}",
+  ],
+}
+`;

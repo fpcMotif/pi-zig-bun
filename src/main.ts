@@ -2,17 +2,34 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import process from "node:process";
 import { SearchClient } from "./search/client";
-import { parseCli, usage } from "./cli";
+import { parseCli, usage, type ParsedCli } from "./cli";
 import { SessionStore, SessionTree } from "./session/tree";
 import { MemoryToolRegistry, type Tool } from "./tools/types";
 import { builtinTools } from "./tools/builtin";
-import { CapabilityManager, type ToolResult } from "./permissions";
+import { CapabilityManager } from "./permissions";
 import { loadSkills } from "./extensions/loader";
 
-interface AppRuntime {
-  search: SearchClient;
-  sessionTree: SessionTree;
-  capabilities: CapabilityManager;
+interface RuntimeSearch {
+  searchFiles(
+    query: string,
+    options: { limit: number; cwd: string; includeScores: boolean },
+  ): Promise<{ results: Array<{ path: string; score: number; matchType: string }> }>;
+  grep(query: string, options: { limit: number; cwd: string }): Promise<{
+    matches: Array<{ path: string; line: number; column: number; text: string }>;
+  }>;
+  stop(): Promise<void>;
+}
+
+interface RuntimeSessionTree {
+  createRoot(role: "user" | "assistant" | "system", content: string): Promise<{ id: string; createdAt: string; role: string }>;
+  fork(leafId: string, role: "user" | "assistant" | "system", content: string): Promise<{ id: string }>;
+  tree(): Promise<Array<{ id: string; parentId: string | null; createdAt: string; role: string }>>;
+  history(rootSession: string): Promise<unknown>;
+}
+
+export interface AppRuntime {
+  search: RuntimeSearch;
+  sessionTree: RuntimeSessionTree;
 }
 
 function registerBuiltinTools(registry: MemoryToolRegistry): void {
@@ -54,6 +71,15 @@ async function runGrepCommand(runtime: AppRuntime, query: string, limit: number,
     const lineText = hit.text.trimEnd();
     console.log(`${hit.path}:${hit.line}:${hit.column + 1}  ${lineText}`);
   }
+}
+
+function loginDeferredMessage(): Record<string, string | boolean> {
+  return {
+    ok: false,
+    command: "/login",
+    code: "NOT_SUPPORTED",
+    message: "Login/auth setup is not implemented yet in pi-zig-bun.",
+  };
 }
 
 async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void> {
@@ -100,6 +126,13 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
       continue;
     }
 
+    if (trimmed === "/login") {
+      console.log(JSON.stringify(loginDeferredMessage()));
+      currentTurn = (await runtime.sessionTree.fork(currentTurn, "user", trimmed)).id;
+      iface.prompt();
+      continue;
+    }
+
     if (trimmed.startsWith("/search ")) {
       const query = trimmed.slice("/search ".length).trim();
       await runSearchCommand(runtime, query, 100, false);
@@ -125,41 +158,7 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
   iface.close();
 }
 
-export async function run(argv: string[] = process.argv.slice(2)): Promise<number> {
-  const args = parseCli(argv);
-
-  if (args.help) {
-    console.log(usage());
-    return 0;
-  }
-
-  if (!path.isAbsolute(args.cwd)) {
-    args.cwd = path.join(process.cwd(), args.cwd);
-  }
-
-  const search = SearchClient.from({ workspaceRoot: args.cwd });
-  await search.ensureInitialized(args.cwd);
-  const capabilities = new CapabilityManager({
-    "fs.read": "*",
-    "fs.write": "*",
-    "fs.execute": "*",
-    "session.access": "*",
-    "net.http": "*",
-  });
-
-  const registry = new MemoryToolRegistry();
-  registerBuiltinTools(registry);
-  await loadSkills(registry, [
-    path.join(args.cwd, "skills"),
-    path.join(process.cwd(), ".pi", "skills"),
-  ]);
-
-  const runtime: AppRuntime = {
-    search,
-    sessionTree: new SessionTree(new SessionStore(args.cwd)),
-    capabilities,
-  };
-
+export async function dispatchCommand(runtime: AppRuntime, args: ParsedCli): Promise<number> {
   switch (args.command) {
     case "search": {
       if (!args.query) {
@@ -194,15 +193,55 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
         console.log("Session subcommand usage: session --root-session <id>");
         return 1;
       }
-      const rootTurn = await runtime.sessionTree.history(args.rootSession);
-      console.log(JSON.stringify(rootTurn, null, 2));
+      console.log(JSON.stringify(await runtime.sessionTree.history(args.rootSession), null, 2));
+      return 0;
+    case "login":
+      console.log(JSON.stringify(loginDeferredMessage()));
       return 0;
     case "interactive":
-    default: {
+    default:
       await runInteractive(runtime, args.json);
       return 0;
-    }
   }
+}
+
+export async function run(argv: string[] = process.argv.slice(2)): Promise<number> {
+  const args = parseCli(argv);
+
+  if (args.help) {
+    console.log(usage());
+    return 0;
+  }
+
+  if (!path.isAbsolute(args.cwd)) {
+    args.cwd = path.join(process.cwd(), args.cwd);
+  }
+
+  const search = SearchClient.from({ workspaceRoot: args.cwd });
+  await search.ensureInitialized(args.cwd);
+  const capabilities = new CapabilityManager({
+    "fs.read": "*",
+    "fs.write": "*",
+    "fs.execute": "*",
+    "session.access": "*",
+    "net.http": "*",
+  });
+
+  const registry = new MemoryToolRegistry();
+  registerBuiltinTools(registry);
+  await loadSkills(registry, [
+    path.join(args.cwd, "skills"),
+    path.join(process.cwd(), ".pi", "skills"),
+  ]);
+
+  void capabilities;
+
+  const runtime: AppRuntime = {
+    search,
+    sessionTree: new SessionTree(new SessionStore(args.cwd)),
+  };
+
+  return dispatchCommand(runtime, args);
 }
 
 if (import.meta.main) {
