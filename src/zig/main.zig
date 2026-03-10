@@ -17,10 +17,26 @@ const SearchEntry = struct {
     size: u64,
 };
 
+const FrecencyItem = struct {
+    rel_path: []const u8,
+    open_count: u32,
+    last_open_ms: i64,
+};
+
+const ScoreComponents = struct {
+    fuzzy: i32,
+    git: i32,
+    frecency: i32,
+    proximity: i32,
+};
+
 const SearchState = struct {
     allocator: Allocator,
     entries: ArrayList(SearchEntry, null),
     ignore_patterns: ArrayList([]const u8, null),
+    git_modified: ArrayList([]const u8, null),
+    git_untracked: ArrayList([]const u8, null),
+    frecency: ArrayList(FrecencyItem, null),
     root: ?[]const u8,
 
     pub fn init(allocator: Allocator) SearchState {
@@ -28,6 +44,9 @@ const SearchState = struct {
             .allocator = allocator,
             .entries = .init(allocator),
             .ignore_patterns = .init(allocator),
+            .git_modified = .init(allocator),
+            .git_untracked = .init(allocator),
+            .frecency = .init(allocator),
             .root = null,
         };
     }
@@ -36,6 +55,12 @@ const SearchState = struct {
         self.clearIndex();
         self.entries.deinit();
         self.ignore_patterns.deinit();
+        for (self.git_modified.items) |path| self.allocator.free(path);
+        self.git_modified.deinit();
+        for (self.git_untracked.items) |path| self.allocator.free(path);
+        self.git_untracked.deinit();
+        for (self.frecency.items) |item| self.allocator.free(item.rel_path);
+        self.frecency.deinit();
         if (self.root) |root| self.allocator.free(root);
     }
 
@@ -60,6 +85,8 @@ const SearchState = struct {
             if (mem.eql(u8, existing, root)) {
                 if (self.entries.items.len == 0) {
                     try self.build(root);
+                } else {
+                    try self.refreshIncremental(root);
                 }
                 return;
             }
@@ -72,42 +99,100 @@ const SearchState = struct {
     fn build(self: *SearchState, root: []const u8) !void {
         self.clearIndex();
         self.root = try self.allocator.dupe(u8, root);
-        const now = std.time.milliTimestamp();
-        _ = now;
-
         try self.loadIgnorePatterns(root);
         try self.scanDirectory(root, "");
+        try self.refreshGitStatus(root);
+    }
+
+    fn refreshIncremental(self: *SearchState, root: []const u8) !void {
+        self.clearIndex();
+        try self.loadIgnorePatterns(root);
+        try self.scanDirectory(root, "");
+        try self.refreshGitStatus(root);
     }
 
     fn loadIgnorePatterns(self: *SearchState, root: []const u8) !void {
-        const path = try join(self.allocator, &.{ root, ".gitignore" });
-        defer self.allocator.free(path);
+        const ignore_files = [_][]const u8{ ".gitignore", ".ignore", ".geminiignore" };
+        for (ignore_files) |ignore_name| {
+            const path = try join(self.allocator, &.{ root, ignore_name });
+            defer self.allocator.free(path);
 
-        var file = fs.cwd().openFile(path, .{}) catch return;
-        defer file.close();
+            var file = fs.cwd().openFile(path, .{}) catch continue;
+            defer file.close();
 
-        const content = try file.readToEndAlloc(self.allocator, max_file_read_bytes);
-        defer self.allocator.free(content);
+            const content = try file.readToEndAlloc(self.allocator, max_file_read_bytes);
+            defer self.allocator.free(content);
 
-        var iter = mem.splitAny(u8, content, "\n");
-        while (iter.next()) |line_raw| {
-            const trimmed_line = trimSpace(line_raw);
-            if (trimmed_line.len == 0) continue;
-            if (trimmed_line[0] == '#') continue;
-            if (trimmed_line[0] == '!') continue;
+            var iter = mem.splitAny(u8, content, "\n");
+            while (iter.next()) |line_raw| {
+                const trimmed_line = trimSpace(line_raw);
+                if (trimmed_line.len == 0) continue;
+                if (trimmed_line[0] == '#') continue;
+                if (trimmed_line[0] == '!') continue;
 
-            var pattern = trimmed_line;
-            if (pattern[0] == '/') {
-                pattern = pattern[1..];
-            }
-            if (pattern.len == 0) continue;
-            if (pattern[pattern.len - 1] == '/') {
-                pattern = pattern[0 .. pattern.len - 1];
+                var pattern = trimmed_line;
+                if (pattern[0] == '/') {
+                    pattern = pattern[1..];
+                }
                 if (pattern.len == 0) continue;
-            }
+                if (pattern[pattern.len - 1] == '/') {
+                    pattern = pattern[0 .. pattern.len - 1];
+                    if (pattern.len == 0) continue;
+                }
 
-            try self.ignore_patterns.append(try self.allocator.dupe(u8, pattern));
+                try self.ignore_patterns.append(try self.allocator.dupe(u8, pattern));
+            }
         }
+    }
+
+    fn refreshGitStatus(self: *SearchState, root: []const u8) !void {
+        for (self.git_modified.items) |path| self.allocator.free(path);
+        self.git_modified.clearRetainingCapacity();
+        for (self.git_untracked.items) |path| self.allocator.free(path);
+        self.git_untracked.clearRetainingCapacity();
+
+        var child = std.process.Child.init(&.{ "git", "-C", root, "status", "--porcelain", "--untracked-files=all" }, self.allocator);
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Ignore;
+        child.stdin_behavior = .Ignore;
+        child.spawn() catch return;
+        const output = child.stdout.?.readToEndAlloc(self.allocator, 2 * 1024 * 1024) catch {
+            _ = child.wait() catch {};
+            return;
+        };
+        defer self.allocator.free(output);
+        _ = child.wait() catch return;
+
+        var lines = mem.splitScalar(u8, output, '\n');
+        while (lines.next()) |line_raw| {
+            const line = trimSpace(line_raw);
+            if (line.len < 4) continue;
+            const status = line[0..2];
+            const rel = trimSpace(line[3..]);
+            if (rel.len == 0) continue;
+            if (mem.eql(u8, status, "??")) {
+                try self.git_untracked.append(try self.allocator.dupe(u8, rel));
+            } else if (status[0] != ' ' or status[1] != ' ') {
+                try self.git_modified.append(try self.allocator.dupe(u8, rel));
+            }
+        }
+    }
+
+    fn noteOpenedPath(self: *SearchState, rel_path: []const u8) !void {
+        const now = std.time.milliTimestamp();
+        for (self.frecency.items) |*item| {
+            if (mem.eql(u8, item.rel_path, rel_path)) {
+                item.open_count += 1;
+                item.last_open_ms = now;
+                return;
+            }
+        }
+
+        try self.frecency.append(.{
+            .rel_path = try self.allocator.dupe(u8, rel_path),
+            .open_count = 1,
+            .last_open_ms = now,
+        });
     }
 
     fn scanDirectory(self: *SearchState, dir_path: []const u8, rel_prefix: []const u8) !void {
@@ -217,6 +302,7 @@ const FileSearchResult = struct {
     score: i32,
     match_type: []const u8,
     rank: usize,
+    score_components: ?ScoreComponents,
 };
 
 const GrepResponse = struct {
@@ -375,6 +461,7 @@ fn parseFilesParams(
     offset: usize,
     include_scores: bool,
     max_typos: usize,
+    debug_scores: bool,
 } {
     const query_raw: []const u8 = if (params) |object| getString(object, "query") orelse "" else "";
     const query = try parseSearchQuery(allocator, query_raw);
@@ -383,6 +470,7 @@ fn parseFilesParams(
     const offset: usize = if (params) |object| getPositiveUsize(object, "offset", 0) else 0;
     const include_scores: bool = if (params) |object| getBool(object, "includeScores", true) else true;
     const max_typos: usize = if (params) |object| getPositiveUsize(object, "maxTypos", @min(query.normalized.len / 3, 2)) else @min(query.normalized.len / 3, 2);
+    const debug_scores: bool = if (params) |object| getBool(object, "debugScores", false) else false;
 
     return .{
         .query = query,
@@ -391,6 +479,7 @@ fn parseFilesParams(
         .offset = offset,
         .include_scores = include_scores,
         .max_typos = max_typos,
+        .debug_scores = debug_scores,
     };
 }
 
@@ -487,7 +576,36 @@ fn matchFileByName(entry: SearchEntry, name_filter: ?[]const u8) bool {
     return mem.indexOf(u8, entry.file_name_lower, filter) != null;
 }
 
-const FileHit = struct { entry: SearchEntry, score: i32, match_type: []const u8, rank: usize };
+fn containsPath(list: ArrayList([]const u8, null), rel_path: []const u8) bool {
+    for (list.items) |item| {
+        if (mem.eql(u8, item, rel_path)) return true;
+    }
+    return false;
+}
+
+fn frecencyScore(state: *SearchState, rel_path: []const u8) i32 {
+    for (state.frecency.items) |item| {
+        if (mem.eql(u8, item.rel_path, rel_path)) {
+            const age_ms = @max(0, std.time.milliTimestamp() - item.last_open_ms);
+            const recency_bonus = @max(0, 160 - @as(i32, @intCast(age_ms / (15 * 60 * 1000))));
+            const freq_bonus = @as(i32, @intCast(@min(item.open_count, 25))) * 8;
+            return recency_bonus + freq_bonus;
+        }
+    }
+    return 0;
+}
+
+fn proximityScore(cwd: []const u8, abs_path: []const u8) i32 {
+    if (cwd.len == 0 or abs_path.len == 0) return 0;
+    var common: usize = 0;
+    const max_common = @min(cwd.len, abs_path.len);
+    while (common < max_common and cwd[common] == abs_path[common]) : (common += 1) {}
+    if (common == 0) return 0;
+    const distance = @as(i32, @intCast(abs_path.len - common));
+    return @max(0, 160 - @divTrunc(distance, 2));
+}
+
+const FileHit = struct { entry: SearchEntry, score: i32, match_type: []const u8, rank: usize, components: ScoreComponents };
 
 fn scorePathMatch(query: ParsedQuery, candidate: SearchEntry, max_typos: usize, allocator: Allocator) !?struct { score: i32, match_type: []const u8 } {
     if (query.normalized.len == 0) return null;
@@ -629,9 +747,7 @@ fn searchFiles(
 ) !FileSearchResponse {
     const parsed = try parseFilesParams(allocator, params, state.root orelse "");
     defer deinitParsedQuery(allocator, parsed.query);
-    if (!mem.eql(u8, state.root orelse "", parsed.cwd)) {
-        try state.ensureIndex(parsed.cwd);
-    }
+    try state.ensureIndex(parsed.cwd);
 
     const response_query = try allocator.dupe(u8, parsed.query.raw);
 
@@ -651,7 +767,12 @@ fn searchFiles(
             if (maybe_hit == null) continue;
             const hit = maybe_hit.?;
 
-            try matches.append(.{ .entry = entry, .score = hit.score, .match_type = hit.match_type, .rank = 0 });
+            const git_boost: i32 = if (containsPath(state.git_modified, entry.rel_path)) 180 else if (containsPath(state.git_untracked, entry.rel_path)) 140 else 0;
+            const frecency_boost = frecencyScore(state, entry.rel_path);
+            const proximity_boost = proximityScore(parsed.cwd, entry.abs_path);
+            const final_score = hit.score + git_boost + frecency_boost + proximity_boost;
+
+            try matches.append(.{ .entry = entry, .score = final_score, .match_type = hit.match_type, .rank = 0, .components = .{ .fuzzy = hit.score, .git = git_boost, .frecency = frecency_boost, .proximity = proximity_boost } });
         }
     }
 
@@ -663,7 +784,11 @@ fn searchFiles(
 
             const fresh = scoreByFallbackRecent(entry);
             if (fresh <= 0) continue;
-            try matches.append(.{ .entry = entry, .score = fresh, .match_type = "fallback", .rank = 0 });
+            const git_boost: i32 = if (containsPath(state.git_modified, entry.rel_path)) 180 else if (containsPath(state.git_untracked, entry.rel_path)) 140 else 0;
+            const frecency_boost = frecencyScore(state, entry.rel_path);
+            const proximity_boost = proximityScore(parsed.cwd, entry.abs_path);
+            const final_score = fresh + git_boost + frecency_boost + proximity_boost;
+            try matches.append(.{ .entry = entry, .score = final_score, .match_type = "fallback", .rank = 0, .components = .{ .fuzzy = fresh, .git = git_boost, .frecency = frecency_boost, .proximity = proximity_boost } });
         }
     }
 
@@ -687,7 +812,11 @@ fn searchFiles(
             .score = hit.score,
             .match_type = hit.match_type,
             .rank = hit.rank,
+            .score_components = if (parsed.debug_scores or parsed.include_scores) hit.components else null,
         });
+        if (hit.rank <= 5) {
+            state.noteOpenedPath(hit.entry.rel_path) catch {};
+        }
     }
 
     const elapsed_ms = std.time.milliTimestamp() - start;
@@ -732,9 +861,7 @@ fn searchGrep(
     if (parsed.path_filter) |value| {
         defer allocator.free(value);
     }
-    if (!mem.eql(u8, state.root orelse "", parsed.cwd)) {
-        try state.ensureIndex(parsed.cwd);
-    }
+    try state.ensureIndex(parsed.cwd);
 
     const query_raw = parsed.query_raw;
     const query_bytes = if (parsed.case_insensitive) try loweredSlice(allocator, query_raw) else query_raw;
@@ -947,6 +1074,25 @@ fn handleRequest(
             allocator.free(match.text);
         }
         allocator.free(matches);
+        return;
+    }
+
+    if (std.mem.eql(u8, method_value.string, "search.open")) {
+        const params: ?std.json.ObjectMap = if (object.get("params")) |value| switch (value) {
+            .object => value.object,
+            else => null,
+        } else null;
+        if (params) |obj| {
+            if (getString(obj, "path")) |opened| {
+                for (state.entries.items) |entry| {
+                    if (mem.eql(u8, entry.abs_path, opened) or mem.eql(u8, entry.rel_path, opened)) {
+                        try state.noteOpenedPath(entry.rel_path);
+                        break;
+                    }
+                }
+            }
+        }
+        try writeResult(writer, id, .{ .ok = true });
         return;
     }
 
