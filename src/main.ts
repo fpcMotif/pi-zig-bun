@@ -5,6 +5,8 @@ import { SearchClient } from "./search/client";
 import { parseCli, usage } from "./cli";
 import { SessionStore, SessionTree } from "./session/tree";
 import { MemoryToolRegistry, type Tool } from "./tools/types";
+import { ImmutableAuditLogger } from "./audit";
+import { loadSettings, toExecPolicy } from "./settings";
 import { builtinTools } from "./tools/builtin";
 import { CapabilityManager, type ToolResult } from "./permissions";
 import { loadSkills } from "./extensions/loader";
@@ -139,15 +141,23 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
 
   const search = SearchClient.from({ workspaceRoot: args.cwd });
   await search.ensureInitialized(args.cwd);
-  const capabilities = new CapabilityManager({
-    "fs.read": "*",
-    "fs.write": "*",
-    "fs.execute": "*",
-    "session.access": "*",
-    "net.http": "*",
-  });
 
-  const registry = new MemoryToolRegistry();
+  const settings = loadSettings(args.cwd);
+  const askForExecConfirmation = async (command: string): Promise<boolean> => {
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      return false;
+    }
+
+    const prompt = readline.createInterface({ input: process.stdin, output: process.stdout });
+    const answer = await prompt.question(`Command \"${command}\" is not allowlisted. Run anyway? [y/N] `);
+    prompt.close();
+    return answer.trim().toLowerCase() === "y" || answer.trim().toLowerCase() === "yes";
+  };
+
+  const capabilities = new CapabilityManager(settings.capabilities ?? {}, toExecPolicy(settings, askForExecConfirmation));
+
+  const auditLogger = new ImmutableAuditLogger(path.join(args.cwd, ".pi", "audit.log.jsonl"));
+  const registry = new MemoryToolRegistry(auditLogger);
   registerBuiltinTools(registry);
   await loadSkills(registry, [
     path.join(args.cwd, "skills"),

@@ -1,16 +1,21 @@
-export type Capability =
-  | "fs.read"
-  | "fs.write"
-  | "fs.execute"
-  | "net.http"
-  | "session.access";
+export type CanonicalCapability = "fs.read" | "fs.write" | "exec.run" | "net.http" | "session.access";
+export type Capability = CanonicalCapability | "fs.execute";
+
+export type PolicyPattern = string[] | "*";
 
 export interface CapabilityPolicy {
-  "fs.read"?: string[] | "*";
-  "fs.write"?: string[] | "*";
-  "fs.execute"?: string[] | "*";
-  "net.http"?: string[] | "*";
-  "session.access"?: string[] | "*";
+  "fs.read"?: PolicyPattern;
+  "fs.write"?: PolicyPattern;
+  "exec.run"?: PolicyPattern;
+  "fs.execute"?: PolicyPattern;
+  "net.http"?: PolicyPattern;
+  "session.access"?: PolicyPattern;
+}
+
+export interface ExecPolicy {
+  allowlist?: string[];
+  requireConfirmationForNonAllowlisted?: boolean;
+  confirmer?: (command: string) => Promise<boolean> | boolean;
 }
 
 function patternToRegex(pattern: string): RegExp {
@@ -48,7 +53,7 @@ function patternToRegex(pattern: string): RegExp {
   return new RegExp(`${regexSource}$`);
 }
 
-function pathAllowed(policyPatterns: string[] | "*" | undefined, target: string): boolean {
+function pathAllowed(policyPatterns: PolicyPattern | undefined, target: string): boolean {
   if (!policyPatterns) {
     return false;
   }
@@ -61,33 +66,46 @@ function pathAllowed(policyPatterns: string[] | "*" | undefined, target: string)
   return policyPatterns.some((pattern) => patternToRegex(pattern).test(normalizedTarget));
 }
 
+function normalizeCapability(capability: Capability): CanonicalCapability {
+  if (capability === "fs.execute") {
+    return "exec.run";
+  }
+  return capability;
+}
+
+function lookupPatterns(policy: CapabilityPolicy, capability: CanonicalCapability): PolicyPattern | undefined {
+  if (capability === "exec.run") {
+    return policy["exec.run"] ?? policy["fs.execute"];
+  }
+  return policy[capability];
+}
+
 export class CapabilityManager {
   public static readonly All: CapabilityPolicy = {
     "fs.read": "*",
     "fs.write": "*",
-    "fs.execute": "*",
+    "exec.run": "*",
     "net.http": "*",
     "session.access": "*",
   };
 
-  constructor(private policy: CapabilityPolicy = {}) {}
+  constructor(
+    private policy: CapabilityPolicy = {},
+    private readonly execPolicy: ExecPolicy = {},
+  ) {}
 
   public allowAll(): void {
-    this.policy = {
-      "fs.read": "*",
-      "fs.write": "*",
-      "fs.execute": "*",
-      "net.http": "*",
-      "session.access": "*",
-    };
+    this.policy = { ...CapabilityManager.All };
   }
 
   public can(capability: Capability, target?: string): boolean {
-    if (capability !== "session.access" && !target) {
+    const normalized = normalizeCapability(capability);
+
+    if (normalized !== "session.access" && !target) {
       return false;
     }
 
-    const patterns = this.policy[capability];
+    const patterns = lookupPatterns(this.policy, normalized);
     if (patterns === undefined) {
       return false;
     }
@@ -104,8 +122,26 @@ export class CapabilityManager {
   }
 
   public require(capability: Capability, target?: string): void {
-    if (!this.can(capability, target)) {
-      throw new Error(`Capability denied: ${capability}${target ? ` (${target})` : ""}`);
+    const normalized = normalizeCapability(capability);
+    if (!this.can(normalized, target)) {
+      throw new Error(`Capability denied: ${normalized}${target ? ` (${target})` : ""}`);
+    }
+  }
+
+  public async authorizeExec(command: string, target: string): Promise<void> {
+    this.require("exec.run", target);
+
+    const allowlist = this.execPolicy.allowlist ?? [];
+    const allowlisted = allowlist.some((pattern) => patternToRegex(pattern).test(command));
+
+    if (allowlisted || !this.execPolicy.requireConfirmationForNonAllowlisted) {
+      return;
+    }
+
+    const confirmer = this.execPolicy.confirmer;
+    const approved = confirmer ? await confirmer(command) : false;
+    if (!approved) {
+      throw new Error(`Execution denied pending confirmation: ${command}`);
     }
   }
 
@@ -123,4 +159,9 @@ export type ToolResult = {
   output?: string;
   error?: string;
   data?: unknown;
+};
+
+export const __internal = {
+  patternToRegex,
+  normalizeCapability,
 };

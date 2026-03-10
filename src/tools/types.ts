@@ -1,10 +1,12 @@
 import type { Capability } from "../permissions";
+import type { ToolAuditLogger } from "../audit";
 
 export interface ToolExecutionContext {
   id: string;
   cwd: string;
   capabilities: {
     require: (capability: Capability, target?: string) => void;
+    authorizeExec?: (command: string, target: string) => Promise<void>;
   };
 }
 
@@ -17,15 +19,17 @@ export interface Tool<Input = unknown, Output = unknown> {
 }
 
 export interface ToolRegistry {
-  register(tool: Tool): void;
+  register(tool: Tool<any, any>): void;
   run<T>(id: string, input: unknown, ctx: ToolExecutionContext): Promise<T>;
-  list(): Tool[];
+  list(): Tool<any, any>[];
 }
 
 export class MemoryToolRegistry implements ToolRegistry {
   private tools = new Map<string, Tool<any, any>>();
 
-  public register(tool: Tool): void {
+  constructor(private readonly auditLogger?: ToolAuditLogger) {}
+
+  public register(tool: Tool<any, any>): void {
     this.tools.set(tool.id, tool as Tool<any, any>);
   }
 
@@ -35,18 +39,43 @@ export class MemoryToolRegistry implements ToolRegistry {
       throw new Error(`Tool not found: ${id}`);
     }
 
+    const target =
+      typeof input === "object" && input !== null && "path" in input
+        ? String((input as { path?: string }).path)
+        : undefined;
+
     for (const capability of tool.capabilities) {
-      ctx.capabilities.require(capability,
-        typeof input === "object" && input !== null && "path" in input
-          ? String((input as { path?: string }).path)
-          : undefined,
-      );
+      ctx.capabilities.require(capability, target);
     }
 
-    return (await tool.execute(ctx, input)) as T;
+    try {
+      const result = (await tool.execute(ctx, input)) as T;
+      for (const capability of tool.capabilities) {
+        this.auditLogger?.log({
+          timestamp: new Date().toISOString(),
+          toolId: tool.id,
+          capability,
+          target,
+          result: "ok",
+        });
+      }
+      return result;
+    } catch (err) {
+      for (const capability of tool.capabilities) {
+        this.auditLogger?.log({
+          timestamp: new Date().toISOString(),
+          toolId: tool.id,
+          capability,
+          target,
+          result: "error",
+          message: (err as Error).message,
+        });
+      }
+      throw err;
+    }
   }
 
-  public list(): Tool[] {
-    return [...this.tools.values()] as Tool[];
+  public list(): Tool<any, any>[] {
+    return [...this.tools.values()] as Tool<any, any>[];
   }
 }

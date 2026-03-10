@@ -100,14 +100,19 @@ export const bashTool: Tool<{ command: string }, ToolResult> = {
   id: "bash",
   name: "bash",
   description: "Execute a shell command in project root context",
-  capabilities: ["fs.execute"],
+  capabilities: ["exec.run"],
   async execute(ctx, input): Promise<ToolResult> {
     const command = (input as { command?: string }).command;
     if (!command) {
       throw new Error("bash requires { command }");
     }
 
-    ctx.capabilities.require("fs.execute", ctx.cwd);
+    if (ctx.capabilities.authorizeExec) {
+      await ctx.capabilities.authorizeExec(command, ctx.cwd);
+    } else {
+      ctx.capabilities.require("exec.run", ctx.cwd);
+    }
+
     const output = execSync(command, {
       cwd: ctx.cwd,
       encoding: "utf8",
