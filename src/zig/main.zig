@@ -17,6 +17,29 @@ const SearchEntry = struct {
     size: u64,
 };
 
+const RankWeights = struct {
+    fuzzy_score: f64,
+    git_bonus: f64,
+    frecency_bonus: f64,
+    proximity_bonus: f64,
+
+    pub fn defaults() RankWeights {
+        return .{
+            .fuzzy_score = 1.0,
+            .git_bonus = 0.20,
+            .frecency_bonus = 0.15,
+            .proximity_bonus = 0.10,
+        };
+    }
+};
+
+const RankingSignals = struct {
+    fuzzy_score: i32,
+    git_boost: bool,
+    frecency_score: f64,
+    proximity_score: f64,
+};
+
 const SearchState = struct {
     allocator: Allocator,
     entries: ArrayList(SearchEntry, null),
@@ -371,27 +394,45 @@ fn parseFilesParams(
 ) !struct {
     query: ParsedQuery,
     cwd: []const u8,
+    current_dir: []const u8,
     limit: usize,
     offset: usize,
     include_scores: bool,
     max_typos: usize,
+    weights: RankWeights,
 } {
     const query_raw: []const u8 = if (params) |object| getString(object, "query") orelse "" else "";
     const query = try parseSearchQuery(allocator, query_raw);
     const cwd: []const u8 = if (params) |object| getString(object, "cwd") orelse default_root else default_root;
+    const current_dir: []const u8 = if (params) |object| getString(object, "currentDir") orelse cwd else cwd;
     const limit: usize = if (params) |object| getPositiveUsize(object, "limit", 50) else 50;
     const offset: usize = if (params) |object| getPositiveUsize(object, "offset", 0) else 0;
     const include_scores: bool = if (params) |object| getBool(object, "includeScores", true) else true;
     const max_typos: usize = if (params) |object| getPositiveUsize(object, "maxTypos", @min(query.normalized.len / 3, 2)) else @min(query.normalized.len / 3, 2);
+    const weights = if (params) |object| parseRankWeights(object) else RankWeights.defaults();
 
     return .{
         .query = query,
         .cwd = cwd,
+        .current_dir = current_dir,
         .limit = limit,
         .offset = offset,
         .include_scores = include_scores,
         .max_typos = max_typos,
+        .weights = weights,
     };
+}
+
+fn parseRankWeights(params: std.json.ObjectMap) RankWeights {
+    var weights = RankWeights.defaults();
+    const maybe_weights = params.get("weights") orelse return weights;
+    if (maybe_weights != .object) return weights;
+    const w = maybe_weights.object;
+    weights.fuzzy_score = getPositiveFloat(w, "fuzzyScore", weights.fuzzy_score);
+    weights.git_bonus = getPositiveFloat(w, "gitBonus", weights.git_bonus);
+    weights.frecency_bonus = getPositiveFloat(w, "frecencyBonus", weights.frecency_bonus);
+    weights.proximity_bonus = getPositiveFloat(w, "proximityBonus", weights.proximity_bonus);
+    return weights;
 }
 
 fn parseGrepParams(
@@ -456,6 +497,15 @@ fn getPositiveUsize(object: std.json.ObjectMap, key: []const u8, default_value: 
     return switch (value) {
         .integer => |raw| if (raw <= 0) default_value else @intCast(raw),
         .float => |raw| if (!std.math.isFinite(raw) or raw <= 0) default_value else @intFromFloat(raw),
+        else => default_value,
+    };
+}
+
+fn getPositiveFloat(object: std.json.ObjectMap, key: []const u8, default_value: f64) f64 {
+    const value = object.get(key) orelse return default_value;
+    return switch (value) {
+        .integer => |raw| if (raw < 0) default_value else @as(f64, @floatFromInt(raw)),
+        .float => |raw| if (!std.math.isFinite(raw) or raw < 0) default_value else raw,
         else => default_value,
     };
 }
@@ -528,6 +578,51 @@ fn scorePathMatch(query: ParsedQuery, candidate: SearchEntry, max_typos: usize, 
     }
 
     return .{ .score = best_score, .match_type = best_type };
+}
+
+
+fn computeWeightedScore(signals: RankingSignals, weights: RankWeights) i32 {
+    const base = @as(f64, @floatFromInt(signals.fuzzy_score)) * weights.fuzzy_score;
+    const git_mult = if (signals.git_boost) weights.git_bonus else 0.0;
+    const frecency_mult = signals.frecency_score * weights.frecency_bonus;
+    const proximity_mult = signals.proximity_score * weights.proximity_bonus;
+    const total = base * (1.0 + git_mult + frecency_mult + proximity_mult);
+    return @as(i32, @intFromFloat(@round(total)));
+}
+
+fn splitPathSegments(path_value: []const u8, segments: *ArrayList([]const u8, null)) !void {
+    segments.clearRetainingCapacity();
+    var it = mem.splitScalar(u8, path_value, '/');
+    while (it.next()) |seg| {
+        if (seg.len == 0) continue;
+        try segments.append(seg);
+    }
+}
+
+fn proximityScore(current_rel_dir: []const u8, file_rel_path: []const u8, allocator: Allocator) !f64 {
+    if (current_rel_dir.len == 0) {
+        if (mem.indexOfScalar(u8, file_rel_path, '/')) |_| {
+            return 0.5;
+        }
+        return 1.0;
+    }
+
+    const file_dir = if (mem.lastIndexOfScalar(u8, file_rel_path, '/')) |idx| file_rel_path[0..idx] else "";
+    var current_segments = ArrayList([]const u8, null).init(allocator);
+    defer current_segments.deinit();
+    var file_segments = ArrayList([]const u8, null).init(allocator);
+    defer file_segments.deinit();
+
+    try splitPathSegments(current_rel_dir, &current_segments);
+    try splitPathSegments(file_dir, &file_segments);
+
+    var shared: usize = 0;
+    while (shared < current_segments.items.len and shared < file_segments.items.len) : (shared += 1) {
+        if (!mem.eql(u8, current_segments.items[shared], file_segments.items[shared])) break;
+    }
+
+    const distance = (current_segments.items.len - shared) + (file_segments.items.len - shared);
+    return 1.0 / (1.0 + @as(f64, @floatFromInt(distance)));
 }
 
 fn levenshteinLimited(allocator: Allocator, a: []const u8, b: []const u8, max_dist: usize) ?usize {
@@ -616,6 +711,74 @@ fn scoreLineMatch(line_lower: []const u8, query_lower: []const u8, fuzzy: bool, 
     return null;
 }
 
+
+const FrecencyEntry = struct {
+    path_lower: []const u8,
+    score: f64,
+};
+
+fn readGitPaths(allocator: Allocator, params: ?std.json.ObjectMap) !ArrayList([]const u8, null) {
+    var out = ArrayList([]const u8, null).init(allocator);
+    if (params == null) return out;
+    const value = params.?.get("gitPaths") orelse return out;
+    if (value != .array) return out;
+    for (value.array.items) |item| {
+        if (item != .string) continue;
+        try out.append(try toLowerCopy(allocator, item.string));
+    }
+    return out;
+}
+
+fn readFrecencyEntries(allocator: Allocator, params: ?std.json.ObjectMap) !ArrayList(FrecencyEntry, null) {
+    var out = ArrayList(FrecencyEntry, null).init(allocator);
+    if (params == null) return out;
+    const value = params.?.get("frecency") orelse return out;
+    if (value != .object) return out;
+
+    var iterator = value.object.iterator();
+    while (iterator.next()) |entry| {
+        const score = switch (entry.value_ptr.*) {
+            .integer => |raw| if (raw < 0) 0.0 else @as(f64, @floatFromInt(raw)),
+            .float => |raw| if (std.math.isFinite(raw) and raw > 0) raw else 0.0,
+            else => 0.0,
+        };
+        if (score <= 0) continue;
+        try out.append(.{ .path_lower = try toLowerCopy(allocator, entry.key_ptr.*), .score = @min(score, 1.0) });
+    }
+
+    return out;
+}
+
+fn hasGitBoost(git_paths: []const []const u8, rel_path_lower: []const u8) bool {
+    for (git_paths) |p| {
+        if (mem.eql(u8, p, rel_path_lower)) return true;
+    }
+    return false;
+}
+
+fn frecencyScoreForPath(entries: []const FrecencyEntry, rel_path_lower: []const u8) f64 {
+    for (entries) |item| {
+        if (mem.eql(u8, item.path_lower, rel_path_lower)) return item.score;
+    }
+    return 0.0;
+}
+
+fn toRelativeLower(allocator: Allocator, root: []const u8, current_dir: []const u8) ![]const u8 {
+    if (current_dir.len == 0 or mem.eql(u8, current_dir, root)) {
+        return try allocator.dupe(u8, "");
+    }
+
+    if (!mem.startsWith(u8, current_dir, root)) {
+        return try allocator.dupe(u8, "");
+    }
+
+    var suffix = current_dir[root.len..];
+    while (suffix.len > 0 and (suffix[0] == '/' or suffix[0] == '\\')) {
+        suffix = suffix[1..];
+    }
+    return try toLowerCopy(allocator, suffix);
+}
+
 fn scoreByFallbackRecent(entry: SearchEntry) i32 {
     const age_ms = @max(0, std.time.milliTimestamp() - entry.modified_ms);
     const age_hours = @as(i32, @intCast(@mod(age_ms / (60 * 60 * 1000), 10_000)));
@@ -635,6 +798,21 @@ fn searchFiles(
 
     const response_query = try allocator.dupe(u8, parsed.query.raw);
 
+    var git_paths = try readGitPaths(allocator, params);
+    defer {
+        for (git_paths.items) |p| allocator.free(p);
+        git_paths.deinit();
+    }
+
+    var frecency_entries = try readFrecencyEntries(allocator, params);
+    defer {
+        for (frecency_entries.items) |item| allocator.free(item.path_lower);
+        frecency_entries.deinit();
+    }
+
+    const current_rel_dir = try toRelativeLower(allocator, state.root orelse "", parsed.current_dir);
+    defer allocator.free(current_rel_dir);
+
     const start = std.time.milliTimestamp();
     const q = parsed.query;
 
@@ -650,8 +828,14 @@ fn searchFiles(
             const maybe_hit = try scorePathMatch(q, entry, parsed.max_typos, allocator);
             if (maybe_hit == null) continue;
             const hit = maybe_hit.?;
-
-            try matches.append(.{ .entry = entry, .score = hit.score, .match_type = hit.match_type, .rank = 0 });
+            const signals = RankingSignals{
+                .fuzzy_score = hit.score,
+                .git_boost = hasGitBoost(git_paths.items, entry.rel_path_lower),
+                .frecency_score = frecencyScoreForPath(frecency_entries.items, entry.rel_path_lower),
+                .proximity_score = try proximityScore(current_rel_dir, entry.rel_path_lower, allocator),
+            };
+            const weighted_score = computeWeightedScore(signals, parsed.weights);
+            try matches.append(.{ .entry = entry, .score = weighted_score, .match_type = hit.match_type, .rank = 0 });
         }
     }
 
@@ -663,7 +847,14 @@ fn searchFiles(
 
             const fresh = scoreByFallbackRecent(entry);
             if (fresh <= 0) continue;
-            try matches.append(.{ .entry = entry, .score = fresh, .match_type = "fallback", .rank = 0 });
+            const signals = RankingSignals{
+                .fuzzy_score = fresh,
+                .git_boost = hasGitBoost(git_paths.items, entry.rel_path_lower),
+                .frecency_score = frecencyScoreForPath(frecency_entries.items, entry.rel_path_lower),
+                .proximity_score = try proximityScore(current_rel_dir, entry.rel_path_lower, allocator),
+            };
+            const weighted_score = computeWeightedScore(signals, parsed.weights);
+            try matches.append(.{ .entry = entry, .score = weighted_score, .match_type = "fallback", .rank = 0 });
         }
     }
 
@@ -1023,4 +1214,34 @@ pub fn main() !void {
     }
 
     try out_writer.flush();
+}
+
+test "ranking signal: git boost only" {
+    const weights = RankWeights.defaults();
+    const base = RankingSignals{ .fuzzy_score = 100, .git_boost = false, .frecency_score = 0, .proximity_score = 0 };
+    const boosted = RankingSignals{ .fuzzy_score = 100, .git_boost = true, .frecency_score = 0, .proximity_score = 0 };
+    try std.testing.expect(computeWeightedScore(boosted, weights) > computeWeightedScore(base, weights));
+}
+
+test "ranking signal: frecency only" {
+    const weights = RankWeights.defaults();
+    const base = RankingSignals{ .fuzzy_score = 100, .git_boost = false, .frecency_score = 0, .proximity_score = 0 };
+    const boosted = RankingSignals{ .fuzzy_score = 100, .git_boost = false, .frecency_score = 1, .proximity_score = 0 };
+    try std.testing.expect(computeWeightedScore(boosted, weights) > computeWeightedScore(base, weights));
+}
+
+test "ranking signal: proximity only" {
+    const weights = RankWeights.defaults();
+    const base = RankingSignals{ .fuzzy_score = 100, .git_boost = false, .frecency_score = 0, .proximity_score = 0 };
+    const boosted = RankingSignals{ .fuzzy_score = 100, .git_boost = false, .frecency_score = 0, .proximity_score = 1 };
+    try std.testing.expect(computeWeightedScore(boosted, weights) > computeWeightedScore(base, weights));
+}
+
+test "ranking combined ordering remains deterministic" {
+    const weights = RankWeights.defaults();
+    const a = RankingSignals{ .fuzzy_score = 100, .git_boost = false, .frecency_score = 0, .proximity_score = 0 };
+    const b = RankingSignals{ .fuzzy_score = 100, .git_boost = true, .frecency_score = 0, .proximity_score = 0 };
+    const c = RankingSignals{ .fuzzy_score = 100, .git_boost = true, .frecency_score = 1, .proximity_score = 1 };
+    try std.testing.expect(computeWeightedScore(c, weights) > computeWeightedScore(b, weights));
+    try std.testing.expect(computeWeightedScore(b, weights) > computeWeightedScore(a, weights));
 }

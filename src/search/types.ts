@@ -1,7 +1,7 @@
 export interface SearchFileResultItem {
   path: string;
   score: number;
-  matchType: "exact" | "prefix" | "substring" | "fuzzy";
+  matchType: "exact" | "prefix" | "substring" | "fuzzy" | "fallback";
   rank: number;
 }
 

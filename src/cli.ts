@@ -6,6 +6,10 @@ export interface ParsedCli {
   limit: number;
   rootSession?: string;
   help: boolean;
+  fuzzyScoreWeight: number;
+  gitBonusWeight: number;
+  frecencyBonusWeight: number;
+  proximityBonusWeight: number;
 }
 
 function normalizeCommand(raw: string): ParsedCli["command"] {
@@ -31,6 +35,10 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
     cwd: process.cwd(),
     limit: 50,
     help: false,
+    fuzzyScoreWeight: 1,
+    gitBonusWeight: 0.2,
+    frecencyBonusWeight: 0.15,
+    proximityBonusWeight: 0.1,
   };
 
   const args = [...argv];
@@ -84,6 +92,22 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
         options.rootSession = args[i + 1]!;
         i += 2;
         continue;
+      case "--fuzzy-score-weight":
+        options.fuzzyScoreWeight = Number.parseFloat(args[i + 1] ?? "1");
+        i += 2;
+        continue;
+      case "--git-bonus-weight":
+        options.gitBonusWeight = Number.parseFloat(args[i + 1] ?? "0.2");
+        i += 2;
+        continue;
+      case "--frecency-bonus-weight":
+        options.frecencyBonusWeight = Number.parseFloat(args[i + 1] ?? "0.15");
+        i += 2;
+        continue;
+      case "--proximity-bonus-weight":
+        options.proximityBonusWeight = Number.parseFloat(args[i + 1] ?? "0.1");
+        i += 2;
+        continue;
       default:
         i += 1;
     }
@@ -111,11 +135,15 @@ export function usage(): string {
     "  session           Alias for session tree operations",
     "",
     "Flags:",
-    "  -h, --help                Show help",
-    "  -j, --json                Output JSON responses only",
-    "  -c, --cwd <path>          Workspace root for index and sessions",
-    "  -l, --limit <n>           Max results (default 50)",
-    "  -r, --root-session <id>    Continue from a branch root session",
+    "  -h, --help                        Show help",
+    "  -j, --json                        Output JSON responses only",
+    "  -c, --cwd <path>                  Workspace root for index and sessions",
+    "  -l, --limit <n>                   Max results (default 50)",
+    "  -r, --root-session <id>           Continue from a branch root session",
+    "  --fuzzy-score-weight <n>          Fuzzy base weight (default 1)",
+    "  --git-bonus-weight <n>            Git boost weight (default 0.2)",
+    "  --frecency-bonus-weight <n>       Frecency boost weight (default 0.15)",
+    "  --proximity-bonus-weight <n>      Proximity boost weight (default 0.1)",
     "",
     "Interactive mode (default):",
     "  /search <query>            Run file search",

@@ -23,6 +23,9 @@ function registerBuiltinTools(registry: MemoryToolRegistry): void {
 
 async function runSearchCommand(runtime: AppRuntime, query: string, limit: number, json: boolean): Promise<void> {
   const response = await runtime.search.searchFiles(query, { limit, cwd: process.cwd(), includeScores: true });
+  if (response.results[0]) {
+    runtime.search.recordSelection(response.results[0].path);
+  }
   if (json) {
     console.log(JSON.stringify(response));
     return;
@@ -137,7 +140,15 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
     args.cwd = path.join(process.cwd(), args.cwd);
   }
 
-  const search = SearchClient.from({ workspaceRoot: args.cwd });
+  const search = SearchClient.from({
+    workspaceRoot: args.cwd,
+    rankingWeights: {
+      fuzzyScore: args.fuzzyScoreWeight,
+      gitBonus: args.gitBonusWeight,
+      frecencyBonus: args.frecencyBonusWeight,
+      proximityBonus: args.proximityBonusWeight,
+    },
+  });
   await search.ensureInitialized(args.cwd);
   const capabilities = new CapabilityManager({
     "fs.read": "*",
