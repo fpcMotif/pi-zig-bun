@@ -14,4 +14,16 @@ pub fn build(b: *std.Build) void {
     });
 
     b.installArtifact(exe);
+
+    const bench = b.addExecutable(.{
+        .name = "pi-zig-search-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/zig/bench_init.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
+    b.installArtifact(bench);
+
 }

@@ -1,7 +1,7 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const fs = std.fs;
 const mem = std.mem;
-
 const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.AlignedManaged;
 
@@ -17,11 +17,13 @@ const SearchEntry = struct {
     size: u64,
 };
 
-const SearchState = struct {
+pub const SearchState = struct {
     allocator: Allocator,
     entries: ArrayList(SearchEntry, null),
     ignore_patterns: ArrayList([]const u8, null),
     root: ?[]const u8,
+    cache_dir: ?[]const u8,
+    watcher: Watcher,
 
     pub fn init(allocator: Allocator) SearchState {
         return .{
@@ -29,6 +31,8 @@ const SearchState = struct {
             .entries = .init(allocator),
             .ignore_patterns = .init(allocator),
             .root = null,
+            .cache_dir = null,
+            .watcher = Watcher.init(allocator),
         };
     }
 
@@ -37,6 +41,8 @@ const SearchState = struct {
         self.entries.deinit();
         self.ignore_patterns.deinit();
         if (self.root) |root| self.allocator.free(root);
+        if (self.cache_dir) |path| self.allocator.free(path);
+        self.watcher.deinit();
     }
 
     pub fn clearIndex(self: *SearchState) void {
@@ -60,11 +66,24 @@ const SearchState = struct {
             if (mem.eql(u8, existing, root)) {
                 if (self.entries.items.len == 0) {
                     try self.build(root);
+                } else if (self.watcher.available()) {
+                    const changed = try self.watcher.processPending(self, root);
+                    if (changed) {
+                        try self.writeCache();
+                    }
+                } else {
+                    try self.build(root);
                 }
                 return;
             }
             self.allocator.free(existing);
             self.root = null;
+            if (self.cache_dir) |path| {
+                self.allocator.free(path);
+                self.cache_dir = null;
+            }
+            self.watcher.deinit();
+            self.watcher = Watcher.init(self.allocator);
         }
         try self.build(root);
     }
@@ -72,42 +91,182 @@ const SearchState = struct {
     fn build(self: *SearchState, root: []const u8) !void {
         self.clearIndex();
         self.root = try self.allocator.dupe(u8, root);
-        const now = std.time.milliTimestamp();
-        _ = now;
-
         try self.loadIgnorePatterns(root);
+
+        if (try self.loadCacheIfFresh(root)) {
+            try self.watcher.setup(root);
+            return;
+        }
+
         try self.scanDirectory(root, "");
+        try self.watcher.setup(root);
+        try self.writeCache();
     }
 
     fn loadIgnorePatterns(self: *SearchState, root: []const u8) !void {
-        const path = try join(self.allocator, &.{ root, ".gitignore" });
-        defer self.allocator.free(path);
+        const files = [_][]const u8{ ".gitignore", ".ignore", ".geminiignore" };
+        for (files) |name| {
+            const path = try join(self.allocator, &.{ root, name });
+            defer self.allocator.free(path);
 
-        var file = fs.cwd().openFile(path, .{}) catch return;
-        defer file.close();
+            var file = fs.cwd().openFile(path, .{}) catch continue;
+            defer file.close();
 
-        const content = try file.readToEndAlloc(self.allocator, max_file_read_bytes);
-        defer self.allocator.free(content);
+            const content = try file.readToEndAlloc(self.allocator, max_file_read_bytes);
+            defer self.allocator.free(content);
 
-        var iter = mem.splitAny(u8, content, "\n");
-        while (iter.next()) |line_raw| {
-            const trimmed_line = trimSpace(line_raw);
-            if (trimmed_line.len == 0) continue;
-            if (trimmed_line[0] == '#') continue;
-            if (trimmed_line[0] == '!') continue;
+            var iter = mem.splitAny(u8, content, "\n");
+            while (iter.next()) |line_raw| {
+                const trimmed_line = trimSpace(line_raw);
+                if (trimmed_line.len == 0) continue;
+                if (trimmed_line[0] == '#') continue;
+                if (trimmed_line[0] == '!') continue;
 
-            var pattern = trimmed_line;
-            if (pattern[0] == '/') {
-                pattern = pattern[1..];
-            }
-            if (pattern.len == 0) continue;
-            if (pattern[pattern.len - 1] == '/') {
-                pattern = pattern[0 .. pattern.len - 1];
+                var pattern = trimmed_line;
+                if (pattern[0] == '/') {
+                    pattern = pattern[1..];
+                }
                 if (pattern.len == 0) continue;
-            }
+                if (pattern[pattern.len - 1] == '/') {
+                    pattern = pattern[0 .. pattern.len - 1];
+                    if (pattern.len == 0) continue;
+                }
 
-            try self.ignore_patterns.append(try self.allocator.dupe(u8, pattern));
+                try self.ignore_patterns.append(try self.allocator.dupe(u8, pattern));
+            }
         }
+    }
+
+    fn workspaceHashHex(self: *SearchState, root: []const u8) ![]const u8 {
+        _ = self;
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(root);
+        const digest = hasher.final();
+        var out: [16]u8 = undefined;
+        _ = std.fmt.bufPrint(&out, "{x:0>16}", .{digest}) catch unreachable;
+        return std.heap.page_allocator.dupe(u8, &out);
+    }
+
+    fn cacheFilePath(self: *SearchState, root: []const u8) ![]const u8 {
+        if (self.cache_dir) |p| return try join(self.allocator, &.{ p, "index.bin" });
+        const home = std.process.getEnvVarOwned(self.allocator, "HOME") catch return error.CacheUnavailable;
+        defer self.allocator.free(home);
+        const hash = try self.workspaceHashHex(root);
+        defer std.heap.page_allocator.free(hash);
+        const dir = try join(self.allocator, &.{ home, ".pi", "cache", "search", hash });
+        self.cache_dir = try self.allocator.dupe(u8, dir);
+        self.allocator.free(dir);
+        return try join(self.allocator, &.{ self.cache_dir.?, "index.bin" });
+    }
+
+    fn writeCache(self: *SearchState) !void {
+        const root = self.root orelse return;
+        const cache_file = self.cacheFilePath(root) catch return;
+        defer self.allocator.free(cache_file);
+        const dir = fs.path.dirname(cache_file) orelse return;
+        fs.cwd().makePath(dir) catch return;
+
+        var file = fs.cwd().createFile(cache_file, .{ .truncate = true }) catch return;
+        defer file.close();
+        const writer = file.writer();
+        try writer.writeAll("PISIDX1\x00");
+        try writer.writeInt(u32, @intCast(self.entries.items.len), .little);
+        for (self.entries.items) |entry| {
+            try writeBytes(writer, entry.rel_path);
+            try writer.writeInt(i64, entry.modified_ms, .little);
+            try writer.writeInt(u64, entry.size, .little);
+        }
+    }
+
+    fn loadCacheIfFresh(self: *SearchState, root: []const u8) !bool {
+        const cache_file = self.cacheFilePath(root) catch return false;
+        defer self.allocator.free(cache_file);
+        var file = fs.cwd().openFile(cache_file, .{}) catch return false;
+        defer file.close();
+        const content = try file.readToEndAlloc(self.allocator, 64 * 1024 * 1024);
+        defer self.allocator.free(content);
+        if (content.len < 12) return false;
+        if (!mem.eql(u8, content[0..8], "PISIDX1\x00")) return false;
+        var fbs = std.io.fixedBufferStream(content[8..]);
+        const r = fbs.reader();
+        const count = try r.readInt(u32, .little);
+        var cached = std.StringHashMap(struct { modified_ms: i64, size: u64 }).init(self.allocator);
+        defer cached.deinit();
+        var i: usize = 0;
+        while (i < count) : (i += 1) {
+            const rel = try readBytes(self.allocator, r);
+            defer self.allocator.free(rel);
+            const modified_ms = try r.readInt(i64, .little);
+            const size = try r.readInt(u64, .little);
+            try cached.put(try self.allocator.dupe(u8, rel), .{ .modified_ms = modified_ms, .size = size });
+        }
+        if (!try self.validateCache(root, &cached)) {
+            var it = cached.iterator();
+            while (it.next()) |kv| self.allocator.free(kv.key_ptr.*);
+            return false;
+        }
+
+        var it = cached.iterator();
+        while (it.next()) |kv| {
+            defer self.allocator.free(kv.key_ptr.*);
+            try self.addEntryFromRel(root, kv.key_ptr.*, kv.value_ptr.modified_ms, kv.value_ptr.size);
+        }
+        return true;
+    }
+
+    fn validateCache(self: *SearchState, root: []const u8, cached: *std.StringHashMap(struct { modified_ms: i64, size: u64 })) !bool {
+        var seen_count: usize = 0;
+        const ok = self.validateScan(root, "", cached, &seen_count) catch return false;
+        if (!ok) return false;
+        return seen_count == cached.count();
+    }
+
+    fn validateScan(self: *SearchState, dir_path: []const u8, rel_prefix: []const u8, cached: *std.StringHashMap(struct { modified_ms: i64, size: u64 }), seen_count: *usize) !bool {
+        var dir = try fs.cwd().openDir(dir_path, .{ .iterate = true });
+        defer dir.close();
+        var iterator = dir.iterate();
+        while (try iterator.next()) |entry| {
+            if (shouldSkipName(entry.name)) continue;
+            const abs_path = try join(self.allocator, &.{ dir_path, entry.name });
+            defer self.allocator.free(abs_path);
+            switch (entry.kind) {
+                .directory => {
+                    const child_rel = if (rel_prefix.len == 0) try self.allocator.dupe(u8, entry.name) else try join(self.allocator, &.{ rel_prefix, entry.name });
+                    defer self.allocator.free(child_rel);
+                    if (shouldIgnorePath(child_rel, &self.ignore_patterns)) continue;
+                    _ = dir.statFile(entry.name) catch continue;
+                    if (!try self.validateScan(abs_path, child_rel, cached, seen_count)) return false;
+                },
+                .file, .sym_link => {
+                    const stat = dir.statFile(entry.name) catch continue;
+                    if (stat.kind != .file or stat.size > max_file_read_bytes) continue;
+                    const rel_path = if (rel_prefix.len == 0) try self.allocator.dupe(u8, entry.name) else try join(self.allocator, &.{ rel_prefix, entry.name });
+                    defer self.allocator.free(rel_path);
+                    if (shouldIgnorePath(rel_path, &self.ignore_patterns)) continue;
+                    const cached_entry = cached.get(rel_path) orelse return false;
+                    const modified_ms: i64 = @as(i64, @intCast(@divFloor(stat.mtime, std.time.ns_per_ms)));
+                    if (cached_entry.size != stat.size or cached_entry.modified_ms != modified_ms) return false;
+                    seen_count.* += 1;
+                },
+                else => {},
+            }
+        }
+        return true;
+    }
+
+    fn addEntryFromRel(self: *SearchState, root: []const u8, rel_path: []const u8, modified_ms: i64, size: u64) !void {
+        const abs_path = try join(self.allocator, &.{ root, rel_path });
+        errdefer self.allocator.free(abs_path);
+        const file_name = fs.path.basename(rel_path);
+        const entry_name = try self.allocator.dupe(u8, file_name);
+        errdefer self.allocator.free(entry_name);
+        const rel_copy = try self.allocator.dupe(u8, rel_path);
+        errdefer self.allocator.free(rel_copy);
+        const rel_lower = try toLowerCopy(self.allocator, rel_copy);
+        errdefer self.allocator.free(rel_lower);
+        const file_lower = try toLowerCopy(self.allocator, entry_name);
+        errdefer self.allocator.free(file_lower);
+        try self.entries.append(.{ .abs_path = abs_path, .rel_path = rel_copy, .rel_path_lower = rel_lower, .file_name = entry_name, .file_name_lower = file_lower, .modified_ms = modified_ms, .size = size });
     }
 
     fn scanDirectory(self: *SearchState, dir_path: []const u8, rel_prefix: []const u8) !void {
@@ -182,6 +341,80 @@ const SearchState = struct {
         }
     }
 };
+
+const Watcher = struct {
+    allocator: Allocator,
+    enabled: bool,
+    watched_root: ?[]const u8,
+
+    fn init(allocator: Allocator) Watcher {
+        return .{ .allocator = allocator, .enabled = builtin.os.tag == .linux, .watched_root = null };
+    }
+
+    fn deinit(self: *Watcher) void {
+        if (self.watched_root) |root| self.allocator.free(root);
+        self.watched_root = null;
+    }
+
+    fn setup(self: *Watcher, root: []const u8) !void {
+        if (self.watched_root) |old| self.allocator.free(old);
+        self.watched_root = try self.allocator.dupe(u8, root);
+    }
+
+    fn available(self: *Watcher) bool {
+        return self.enabled;
+    }
+
+    fn processPending(self: *Watcher, state: *SearchState, root: []const u8) !bool {
+        if (!self.enabled) return false;
+        _ = self;
+        _ = root;
+        // Lightweight platform fallback: rescan and patch entries as an incremental update pass.
+        // On non-linux platforms this path is disabled and caller rebuilds.
+        var old = std.StringHashMap(usize).init(state.allocator);
+        defer old.deinit();
+        for (state.entries.items, 0..) |entry, idx| {
+            try old.put(entry.rel_path, idx);
+        }
+
+        var changed = false;
+        var fresh = SearchState.init(state.allocator);
+        defer fresh.deinit();
+        try fresh.loadIgnorePatterns(root);
+        try fresh.scanDirectory(root, "");
+
+        var new_map = std.StringHashMap(SearchEntry).init(state.allocator);
+        defer new_map.deinit();
+        for (fresh.entries.items) |entry| {
+            try new_map.put(entry.rel_path, entry);
+            if (old.get(entry.rel_path)) |old_idx| {
+                const prev = state.entries.items[old_idx];
+                if (prev.modified_ms != entry.modified_ms or prev.size != entry.size) changed = true;
+            } else {
+                changed = true;
+            }
+        }
+        if (!changed and state.entries.items.len != fresh.entries.items.len) changed = true;
+        if (!changed) return false;
+
+        state.clearIndex();
+        try state.loadIgnorePatterns(root);
+        try state.scanDirectory(root, "");
+        return true;
+    }
+};
+
+fn writeBytes(writer: anytype, bytes: []const u8) !void {
+    try writer.writeInt(u32, @intCast(bytes.len), .little);
+    try writer.writeAll(bytes);
+}
+
+fn readBytes(allocator: Allocator, reader: anytype) ![]const u8 {
+    const len = try reader.readInt(u32, .little);
+    const out = try allocator.alloc(u8, len);
+    try reader.readNoEof(out);
+    return out;
+}
 
 const ParsedQuery = struct {
     raw: []const u8,
