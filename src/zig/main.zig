@@ -6,6 +6,20 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.array_list.AlignedManaged;
 
 const max_file_read_bytes: usize = 512 * 1024; // Keep grep scanning cheap and responsive.
+const cache_schema_magic = "PISIDX01";
+const cache_schema_version: u32 = 1;
+
+const IgnorePattern = struct {
+    raw: []const u8,
+    normalized: []const u8,
+    anchored: bool,
+    basename_only: bool,
+};
+
+const UpdateEvent = struct {
+    kind: enum { create, update, delete },
+    path: []const u8,
+};
 
 const SearchEntry = struct {
     abs_path: []const u8,
@@ -20,7 +34,7 @@ const SearchEntry = struct {
 const SearchState = struct {
     allocator: Allocator,
     entries: ArrayList(SearchEntry, null),
-    ignore_patterns: ArrayList([]const u8, null),
+    ignore_patterns: ArrayList(IgnorePattern, null),
     root: ?[]const u8,
 
     pub fn init(allocator: Allocator) SearchState {
@@ -50,7 +64,8 @@ const SearchState = struct {
         self.entries.clearRetainingCapacity();
 
         for (self.ignore_patterns.items) |pattern| {
-            self.allocator.free(pattern);
+            self.allocator.free(pattern.raw);
+            self.allocator.free(pattern.normalized);
         }
         self.ignore_patterns.clearRetainingCapacity();
     }
@@ -59,55 +74,86 @@ const SearchState = struct {
         if (self.root) |existing| {
             if (mem.eql(u8, existing, root)) {
                 if (self.entries.items.len == 0) {
-                    try self.build(root);
+                    if (!(try self.loadFromCache(root))) {
+                        try self.build(root);
+                    }
                 }
                 return;
             }
             self.allocator.free(existing);
             self.root = null;
         }
-        try self.build(root);
+
+        if (!(try self.loadFromCache(root))) {
+            try self.build(root);
+        }
     }
 
     fn build(self: *SearchState, root: []const u8) !void {
         self.clearIndex();
         self.root = try self.allocator.dupe(u8, root);
-        const now = std.time.milliTimestamp();
-        _ = now;
 
         try self.loadIgnorePatterns(root);
         try self.scanDirectory(root, "");
+        try self.saveToCache();
     }
 
     fn loadIgnorePatterns(self: *SearchState, root: []const u8) !void {
-        const path = try join(self.allocator, &.{ root, ".gitignore" });
-        defer self.allocator.free(path);
+        const names = [_][]const u8{ ".gitignore", ".ignore", ".geminiignore" };
+        for (names) |name| {
+            const path = try join(self.allocator, &.{ root, name });
+            defer self.allocator.free(path);
 
-        var file = fs.cwd().openFile(path, .{}) catch return;
-        defer file.close();
+            var file = fs.cwd().openFile(path, .{}) catch continue;
+            defer file.close();
 
-        const content = try file.readToEndAlloc(self.allocator, max_file_read_bytes);
-        defer self.allocator.free(content);
+            const content = try file.readToEndAlloc(self.allocator, max_file_read_bytes);
+            defer self.allocator.free(content);
 
-        var iter = mem.splitAny(u8, content, "\n");
-        while (iter.next()) |line_raw| {
-            const trimmed_line = trimSpace(line_raw);
-            if (trimmed_line.len == 0) continue;
-            if (trimmed_line[0] == '#') continue;
-            if (trimmed_line[0] == '!') continue;
-
-            var pattern = trimmed_line;
-            if (pattern[0] == '/') {
-                pattern = pattern[1..];
+            var iter = mem.splitAny(u8, content, "\n");
+            while (iter.next()) |line_raw| {
+                try self.appendIgnorePattern(line_raw);
             }
-            if (pattern.len == 0) continue;
-            if (pattern[pattern.len - 1] == '/') {
-                pattern = pattern[0 .. pattern.len - 1];
-                if (pattern.len == 0) continue;
-            }
-
-            try self.ignore_patterns.append(try self.allocator.dupe(u8, pattern));
         }
+    }
+
+    fn appendIgnorePattern(self: *SearchState, line_raw: []const u8) !void {
+        const trimmed_line = trimSpace(line_raw);
+        if (trimmed_line.len == 0) return;
+        if (trimmed_line[0] == '#') return;
+        if (trimmed_line[0] == '!') return;
+
+        var pattern = trimmed_line;
+        var anchored = false;
+        if (pattern[0] == '/') {
+            anchored = true;
+            pattern = pattern[1..];
+        }
+        if (pattern.len == 0) return;
+
+        var directory_only = false;
+        if (pattern[pattern.len - 1] == '/') {
+            directory_only = true;
+            pattern = pattern[0 .. pattern.len - 1];
+            if (pattern.len == 0) return;
+        }
+
+        const raw = try self.allocator.dupe(u8, pattern);
+        errdefer self.allocator.free(raw);
+
+        const basename_only = mem.indexOfScalar(u8, pattern, '/') == null;
+        const normalized_base = if (directory_only)
+            try std.fmt.allocPrint(self.allocator, "{s}/**", .{pattern})
+        else
+            try self.allocator.dupe(u8, pattern);
+        errdefer self.allocator.free(normalized_base);
+
+        try self.ignore_patterns.append(.{
+            .raw = raw,
+            .normalized = normalized_base,
+            .anchored = anchored,
+            .basename_only = basename_only,
+        });
     }
 
     fn scanDirectory(self: *SearchState, dir_path: []const u8, rel_prefix: []const u8) !void {
@@ -116,9 +162,7 @@ const SearchState = struct {
 
         var iterator = dir.iterate();
         while (try iterator.next()) |entry| {
-            if (shouldSkipName(entry.name)) {
-                continue;
-            }
+            if (shouldSkipName(entry.name)) continue;
 
             const abs_path = try join(self.allocator, &.{ dir_path, entry.name });
             defer self.allocator.free(abs_path);
@@ -131,55 +175,227 @@ const SearchState = struct {
                         try join(self.allocator, &.{ rel_prefix, entry.name });
                     defer self.allocator.free(child_rel);
 
-                    if (shouldIgnorePath(child_rel, &self.ignore_patterns)) {
-                        continue;
-                    }
+                    if (shouldIgnorePath(child_rel, true, &self.ignore_patterns)) continue;
 
                     _ = dir.statFile(entry.name) catch continue;
                     try self.scanDirectory(abs_path, child_rel);
                 },
                 .file, .sym_link => {
                     const maybe_file = dir.statFile(entry.name) catch continue;
-                    if (maybe_file.kind != .file) {
-                        continue;
-                    }
+                    if (maybe_file.kind != .file) continue;
 
-                    if (maybe_file.size > max_file_read_bytes) {
-                        continue;
-                    }
+                    if (maybe_file.size > max_file_read_bytes) continue;
 
                     const rel_path = if (rel_prefix.len == 0)
                         try self.allocator.dupe(u8, entry.name)
                     else
                         try join(self.allocator, &.{ rel_prefix, entry.name });
-                    errdefer self.allocator.free(rel_path);
+                    defer self.allocator.free(rel_path);
 
-                    if (shouldIgnorePath(rel_path, &self.ignore_patterns)) {
-                        continue;
-                    }
+                    if (shouldIgnorePath(rel_path, false, &self.ignore_patterns)) continue;
 
-                    const entry_name = try self.allocator.dupe(u8, entry.name);
-                    errdefer self.allocator.free(entry_name);
-
-                    const rel_path_lower = try toLowerCopy(self.allocator, rel_path);
-                    errdefer self.allocator.free(rel_path_lower);
-                    const file_name_lower = try toLowerCopy(self.allocator, entry_name);
-                    errdefer self.allocator.free(file_name_lower);
-
-                    const modified_ms: i64 = @as(i64, @intCast(@divFloor(maybe_file.mtime, std.time.ns_per_ms)));
-                    try self.entries.append(.{
-                        .abs_path = try self.allocator.dupe(u8, abs_path),
-                        .rel_path = rel_path,
-                        .rel_path_lower = rel_path_lower,
-                        .file_name = entry_name,
-                        .file_name_lower = file_name_lower,
-                        .modified_ms = modified_ms,
-                        .size = maybe_file.size,
-                    });
+                    try self.upsertFile(rel_path, abs_path, maybe_file);
                 },
                 else => continue,
             }
         }
+    }
+
+    fn upsertFile(self: *SearchState, rel_path_raw: []const u8, abs_path_raw: []const u8, stat: fs.File.Stat) !void {
+        const rel_path = try normalizePath(self.allocator, rel_path_raw);
+        defer self.allocator.free(rel_path);
+        const abs_path = try normalizePath(self.allocator, abs_path_raw);
+        defer self.allocator.free(abs_path);
+
+        if (shouldIgnorePath(rel_path, false, &self.ignore_patterns)) {
+            self.removeEntryByRelPath(rel_path);
+            return;
+        }
+
+        if (stat.kind != .file or stat.size > max_file_read_bytes) {
+            self.removeEntryByRelPath(rel_path);
+            return;
+        }
+
+        const file_name_slice = baseName(rel_path);
+        const modified_ms: i64 = @as(i64, @intCast(@divFloor(stat.mtime, std.time.ns_per_ms)));
+
+        if (self.findEntryIndex(rel_path)) |idx| {
+            var existing = &self.entries.items[idx];
+            if (!mem.eql(u8, existing.abs_path, abs_path)) {
+                self.allocator.free(existing.abs_path);
+                existing.abs_path = try self.allocator.dupe(u8, abs_path);
+            }
+            existing.modified_ms = modified_ms;
+            existing.size = stat.size;
+            return;
+        }
+
+        const entry_name = try self.allocator.dupe(u8, file_name_slice);
+        errdefer self.allocator.free(entry_name);
+        const rel_path_owned = try self.allocator.dupe(u8, rel_path);
+        errdefer self.allocator.free(rel_path_owned);
+        const rel_path_lower = try toLowerCopy(self.allocator, rel_path_owned);
+        errdefer self.allocator.free(rel_path_lower);
+        const file_name_lower = try toLowerCopy(self.allocator, entry_name);
+        errdefer self.allocator.free(file_name_lower);
+
+        try self.entries.append(.{
+            .abs_path = try self.allocator.dupe(u8, abs_path),
+            .rel_path = rel_path_owned,
+            .rel_path_lower = rel_path_lower,
+            .file_name = entry_name,
+            .file_name_lower = file_name_lower,
+            .modified_ms = modified_ms,
+            .size = stat.size,
+        });
+    }
+
+    fn removeEntryByRelPath(self: *SearchState, rel_path_raw: []const u8) void {
+        const rel_path = normalizePath(self.allocator, rel_path_raw) catch return;
+        defer self.allocator.free(rel_path);
+        const idx = self.findEntryIndex(rel_path) orelse return;
+        const removed = self.entries.swapRemove(idx);
+        freeEntry(self.allocator, removed);
+    }
+
+    fn findEntryIndex(self: *SearchState, rel_path: []const u8) ?usize {
+        for (self.entries.items, 0..) |entry, idx| {
+            if (mem.eql(u8, entry.rel_path, rel_path)) return idx;
+        }
+        return null;
+    }
+
+    fn applyUpdateEvents(self: *SearchState, root: []const u8, events: []const UpdateEvent) !void {
+        try self.ensureIndex(root);
+
+        for (events) |event| {
+            const rel_path = try toRelativePath(self.allocator, root, event.path);
+            defer self.allocator.free(rel_path);
+            if (rel_path.len == 0) continue;
+
+            switch (event.kind) {
+                .delete => self.removeEntryByRelPath(rel_path),
+                .create, .update => {
+                    const abs_path = try join(self.allocator, &.{ root, rel_path });
+                    defer self.allocator.free(abs_path);
+                    var file = fs.cwd().openFile(abs_path, .{}) catch {
+                        self.removeEntryByRelPath(rel_path);
+                        continue;
+                    };
+                    defer file.close();
+                    const stat = file.stat() catch {
+                        self.removeEntryByRelPath(rel_path);
+                        continue;
+                    };
+                    try self.upsertFile(rel_path, abs_path, stat);
+                },
+            }
+        }
+
+        try self.saveToCache();
+    }
+
+    fn saveToCache(self: *SearchState) !void {
+        const root = self.root orelse return;
+        const cache_file = try cacheFilePath(self.allocator, root);
+        defer self.allocator.free(cache_file);
+
+        const cache_dir = fs.path.dirname(cache_file) orelse return;
+        try fs.cwd().makePath(cache_dir);
+
+        var file = try fs.cwd().createFile(cache_file, .{ .truncate = true });
+        defer file.close();
+        var writer = file.writer(&.{});
+        const w = &writer.interface;
+
+        try w.writeAll(cache_schema_magic);
+        try w.writeInt(u32, cache_schema_version, .little);
+        try w.writeInt(u32, @intCast(self.ignore_patterns.items.len), .little);
+        for (self.ignore_patterns.items) |pattern| {
+            try writeBytes(w, pattern.raw);
+            try writeBytes(w, pattern.normalized);
+            try w.writeByte(if (pattern.anchored) 1 else 0);
+            try w.writeByte(if (pattern.basename_only) 1 else 0);
+        }
+
+        try w.writeInt(u64, @intCast(self.entries.items.len), .little);
+        for (self.entries.items) |entry| {
+            try writeBytes(w, entry.abs_path);
+            try writeBytes(w, entry.rel_path);
+            try w.writeInt(i64, entry.modified_ms, .little);
+            try w.writeInt(u64, entry.size, .little);
+        }
+        try w.flush();
+    }
+
+    fn loadFromCache(self: *SearchState, root: []const u8) !bool {
+        const cache_file = try cacheFilePath(self.allocator, root);
+        defer self.allocator.free(cache_file);
+
+        var file = fs.cwd().openFile(cache_file, .{}) catch return false;
+        defer file.close();
+
+        const content = try file.readToEndAlloc(self.allocator, 128 * 1024 * 1024);
+        defer self.allocator.free(content);
+        var stream = std.io.fixedBufferStream(content);
+        const reader = stream.reader();
+
+        var magic_buf: [cache_schema_magic.len]u8 = undefined;
+        _ = reader.readAll(&magic_buf) catch return false;
+        if (!mem.eql(u8, &magic_buf, cache_schema_magic)) return false;
+
+        const version = reader.readInt(u32, .little) catch return false;
+        if (version != cache_schema_version) return false;
+
+        self.clearIndex();
+        self.root = try self.allocator.dupe(u8, root);
+
+        const ignore_len = reader.readInt(u32, .little) catch return false;
+        for (0..ignore_len) |_| {
+            const raw = readBytes(self.allocator, reader) catch return false;
+            errdefer self.allocator.free(raw);
+            const normalized = readBytes(self.allocator, reader) catch return false;
+            errdefer self.allocator.free(normalized);
+            const anchored = (reader.readByte() catch return false) == 1;
+            const basename_only = (reader.readByte() catch return false) == 1;
+            self.ignore_patterns.append(.{
+                .raw = raw,
+                .normalized = normalized,
+                .anchored = anchored,
+                .basename_only = basename_only,
+            }) catch return false;
+        }
+
+        const entry_len = reader.readInt(u64, .little) catch return false;
+        for (0..entry_len) |_| {
+            const abs_path = readBytes(self.allocator, reader) catch return false;
+            errdefer self.allocator.free(abs_path);
+            const rel_path = readBytes(self.allocator, reader) catch return false;
+            errdefer self.allocator.free(rel_path);
+
+            const modified_ms = reader.readInt(i64, .little) catch return false;
+            const size = reader.readInt(u64, .little) catch return false;
+
+            const file_name = try self.allocator.dupe(u8, baseName(rel_path));
+            errdefer self.allocator.free(file_name);
+            const rel_path_lower = try toLowerCopy(self.allocator, rel_path);
+            errdefer self.allocator.free(rel_path_lower);
+            const file_name_lower = try toLowerCopy(self.allocator, file_name);
+            errdefer self.allocator.free(file_name_lower);
+
+            self.entries.append(.{
+                .abs_path = abs_path,
+                .rel_path = rel_path,
+                .rel_path_lower = rel_path_lower,
+                .file_name = file_name,
+                .file_name_lower = file_name_lower,
+                .modified_ms = modified_ms,
+                .size = size,
+            }) catch return false;
+        }
+
+        return true;
     }
 };
 
@@ -285,19 +501,114 @@ fn shouldSkipName(name: []const u8) bool {
     return false;
 }
 
-fn shouldIgnorePath(rel_path: []const u8, ignore_patterns: *ArrayList([]const u8, null)) bool {
-    if (rel_path.len > 0 and rel_path[0] == '.') {
-        return true;
+fn normalizePath(allocator: Allocator, value: []const u8) ![]const u8 {
+    const out = try allocator.dupe(u8, value);
+    for (out) |*ch| {
+        if (ch.* == '\\') ch.* = '/';
     }
+    return out;
+}
+
+fn baseName(path: []const u8) []const u8 {
+    if (mem.lastIndexOfScalar(u8, path, '/')) |idx| return path[idx + 1 ..];
+    return path;
+}
+
+fn freeEntry(allocator: Allocator, entry: SearchEntry) void {
+    allocator.free(entry.abs_path);
+    allocator.free(entry.rel_path);
+    allocator.free(entry.rel_path_lower);
+    allocator.free(entry.file_name);
+    allocator.free(entry.file_name_lower);
+}
+
+fn workspaceHash(root: []const u8) [16]u8 {
+    const value = std.hash.Wyhash.hash(0, root);
+    return std.fmt.bytesToHex(std.mem.asBytes(&value), .lower);
+}
+
+fn cacheFilePath(allocator: Allocator, root: []const u8) ![]const u8 {
+    const home = std.posix.getenv("HOME") orelse return error.MissingHomeDirectory;
+    const hash_hex = workspaceHash(root);
+    return std.fmt.allocPrint(allocator, "{s}/.pi/cache/search/{s}/index.bin", .{ home, hash_hex });
+}
+
+fn writeBytes(writer: *std.Io.Writer, bytes: []const u8) !void {
+    try writer.writeInt(u32, @intCast(bytes.len), .little);
+    try writer.writeAll(bytes);
+}
+
+fn readBytes(allocator: Allocator, reader: anytype) ![]u8 {
+    const len = try reader.readInt(u32, .little);
+    const out = try allocator.alloc(u8, len);
+    _ = try reader.readNoEof(out);
+    return out;
+}
+
+fn toRelativePath(allocator: Allocator, root: []const u8, path: []const u8) ![]const u8 {
+    var normalized = try normalizePath(allocator, path);
+    defer allocator.free(normalized);
+    const root_normalized = try normalizePath(allocator, root);
+    defer allocator.free(root_normalized);
+
+    if (mem.startsWith(u8, normalized, root_normalized)) {
+        normalized = normalized[root_normalized.len..];
+        while (normalized.len > 0 and normalized[0] == '/') normalized = normalized[1..];
+        return allocator.dupe(u8, normalized);
+    }
+
+    return allocator.dupe(u8, normalized);
+}
+
+fn shouldIgnorePath(rel_path_raw: []const u8, is_dir: bool, ignore_patterns: *ArrayList(IgnorePattern, null)) bool {
+    if (rel_path_raw.len > 0 and rel_path_raw[0] == '.') return true;
+    var path_buf: [4096]u8 = undefined;
+    const rel_path = if (rel_path_raw.len < path_buf.len) blk: {
+        @memcpy(path_buf[0..rel_path_raw.len], rel_path_raw);
+        for (path_buf[0..rel_path_raw.len]) |*ch| if (ch.* == '\\') ch.* = '/';
+        break :blk path_buf[0..rel_path_raw.len];
+    } else rel_path_raw;
 
     for (ignore_patterns.items) |pattern| {
-        if (pattern.len == 0) continue;
-        if (mem.indexOf(u8, rel_path, pattern) != null) {
-            return true;
+        const candidate = if (pattern.basename_only) baseName(rel_path) else rel_path;
+        if (globMatch(pattern.normalized, candidate)) return true;
+        if (!pattern.anchored and pattern.basename_only and is_dir and mem.eql(u8, candidate, pattern.raw)) return true;
+    }
+    return false;
+}
+
+fn globMatch(pattern: []const u8, text: []const u8) bool {
+    return globMatchAt(pattern, 0, text, 0);
+}
+
+fn globMatchAt(pattern: []const u8, pi: usize, text: []const u8, ti: usize) bool {
+    if (pi == pattern.len) return ti == text.len;
+
+    if (pattern[pi] == '*') {
+        if (pi + 1 < pattern.len and pattern[pi + 1] == '*') {
+            var skip = ti;
+            while (skip <= text.len) : (skip += 1) {
+                if (globMatchAt(pattern, pi + 2, text, skip)) return true;
+            }
+            return false;
         }
+
+        var idx = ti;
+        while (idx <= text.len) : (idx += 1) {
+            if (idx > ti and text[idx - 1] == '/') break;
+            if (globMatchAt(pattern, pi + 1, text, idx)) return true;
+        }
+        return false;
     }
 
-    return false;
+    if (ti >= text.len) return false;
+    if (pattern[pi] == '?') {
+        if (text[ti] == '/') return false;
+        return globMatchAt(pattern, pi + 1, text, ti + 1);
+    }
+
+    if (pattern[pi] != text[ti]) return false;
+    return globMatchAt(pattern, pi + 1, text, ti + 1);
 }
 
 fn parseSearchQuery(allocator: Allocator, value: []const u8) !ParsedQuery {
@@ -950,6 +1261,40 @@ fn handleRequest(
         return;
     }
 
+    if (std.mem.eql(u8, method_value.string, "search.update")) {
+        const params: ?std.json.ObjectMap = if (object.get("params")) |value| switch (value) {
+            .object => value.object,
+            else => null,
+        } else null;
+
+        const root = if (params) |value| getString(value, "root") orelse (state.root orelse "") else (state.root orelse "");
+        if (params == null or params.?.get("events") == null) {
+            try writeError(writer, id, -32602, "events are required");
+            return;
+        }
+
+        const events_value = params.?.get("events").?;
+        if (events_value != .array) {
+            try writeError(writer, id, -32602, "events must be an array");
+            return;
+        }
+
+        var updates = ArrayList(UpdateEvent, null).init(allocator);
+        defer updates.deinit();
+        for (events_value.array.items) |item| {
+            if (item != .object) continue;
+            const event_path = getString(item.object, "path") orelse continue;
+            const kind_str = getString(item.object, "type") orelse continue;
+            const kind: UpdateEvent.kind = if (mem.eql(u8, kind_str, "create")) .create else if (mem.eql(u8, kind_str, "update")) .update else if (mem.eql(u8, kind_str, "delete")) .delete else continue;
+            try updates.append(.{ .kind = kind, .path = event_path });
+        }
+
+        try state.applyUpdateEvents(root, updates.items);
+        const payload = struct { ok: bool, file_count: usize }{ .ok = true, .file_count = fileSearchStats(state) };
+        try writeResult(writer, id, payload);
+        return;
+    }
+
     if (std.mem.eql(u8, method_value.string, "search.stats")) {
         const payload = struct {
             root: []const u8,
@@ -961,6 +1306,88 @@ fn handleRequest(
     }
 
     try writeError(writer, id, -32601, "method not found");
+}
+
+fn hasRelPath(state: *SearchState, rel_path: []const u8) bool {
+    for (state.entries.items) |entry| {
+        if (mem.eql(u8, entry.rel_path, rel_path)) return true;
+    }
+    return false;
+}
+
+test "indexer loads .gitignore fixtures" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var state = SearchState.init(allocator);
+    defer state.deinit();
+
+    const root = try fs.cwd().realpathAlloc(allocator, "src/zig/test-fixtures/ignore-git");
+    defer allocator.free(root);
+
+    try state.build(root);
+    try std.testing.expect(!hasRelPath(&state, "ignored-git.txt"));
+    try std.testing.expect(hasRelPath(&state, "kept-git.txt"));
+}
+
+test "indexer loads .ignore fixtures" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var state = SearchState.init(allocator);
+    defer state.deinit();
+
+    const root = try fs.cwd().realpathAlloc(allocator, "src/zig/test-fixtures/ignore-dot");
+    defer allocator.free(root);
+
+    try state.build(root);
+    try std.testing.expect(!hasRelPath(&state, "ignored-dot.txt"));
+    try std.testing.expect(hasRelPath(&state, "kept-dot.txt"));
+}
+
+test "indexer loads .geminiignore fixtures" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var state = SearchState.init(allocator);
+    defer state.deinit();
+
+    const root = try fs.cwd().realpathAlloc(allocator, "src/zig/test-fixtures/ignore-gemini");
+    defer allocator.free(root);
+
+    try state.build(root);
+    try std.testing.expect(!hasRelPath(&state, "ignored-gemini.txt"));
+    try std.testing.expect(hasRelPath(&state, "kept-gemini.txt"));
+}
+
+test "incremental update mutates one file without recrawl" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var state = SearchState.init(allocator);
+    defer state.deinit();
+
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+
+    try temp.dir.writeFile(.{ .sub_path = "example.txt", .data = "first" });
+    const temp_root = try temp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(temp_root);
+
+    try state.build(temp_root);
+    const before_count = state.entries.items.len;
+    try std.testing.expect(hasRelPath(&state, "example.txt"));
+
+    try temp.dir.writeFile(.{ .sub_path = "example.txt", .data = "second" });
+    const events = [_]UpdateEvent{.{ .kind = .update, .path = "example.txt" }};
+    try state.applyUpdateEvents(temp_root, &events);
+
+    try std.testing.expectEqual(before_count, state.entries.items.len);
+    try std.testing.expect(hasRelPath(&state, "example.txt"));
 }
 
 pub fn main() !void {
