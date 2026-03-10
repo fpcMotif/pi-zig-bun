@@ -1,3 +1,4 @@
+import { once } from "node:events";
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
@@ -39,15 +40,19 @@ export class SearchBridge {
   private readonly binaryPath: string;
   private readonly workspaceRoot: string;
   private readonly requestTimeoutMs: number;
+  private readonly healthCheckTimeoutMs: number;
   private proc?: ReturnType<typeof spawn>;
   private stdoutBuffer = "";
   private nextRequestId = 1;
   private pending = new Map<RpcId, PendingCall>();
   private started = false;
+  private shuttingDown = false;
+  private callQueue: Promise<void> = Promise.resolve();
 
   constructor(options: SearchBridgeOptions = {}) {
     this.workspaceRoot = options.workspaceRoot ?? process.cwd();
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
+    this.healthCheckTimeoutMs = Math.max(250, Math.min(this.requestTimeoutMs, 2_000));
     this.binaryPath = this.resolveBinary(options.binaryPath);
   }
 
@@ -69,7 +74,6 @@ export class SearchBridge {
       }
     }
 
-    // keep last candidate for nicer errors while still allowing explicit override.
     return candidates[0]!;
   }
 
@@ -99,6 +103,7 @@ export class SearchBridge {
     }
 
     this.started = true;
+    this.shuttingDown = false;
     mkdirSync(path.join(this.workspaceRoot, ".pi"), { recursive: true });
     const stderrLog = path.join(this.workspaceRoot, ".pi", "search-bridge.stderr.log");
 
@@ -124,53 +129,72 @@ export class SearchBridge {
     });
 
     this.proc.on("close", (code, signal) => {
+      this.started = false;
       const err = new Error(
         `Search bridge exited${code !== null ? ` with code ${code}` : ` with signal ${String(signal)}`}`,
       );
-      if (code !== null && code !== 0) {
-        for (const call of this.pending.values()) {
-          call.reject(err);
-        }
-        this.pending.clear();
-      }
-      this.started = false;
+      this.rejectAllPending(err);
+      this.proc = undefined;
     });
 
     this.proc.on("error", (err) => {
-      for (const call of this.pending.values()) {
-        call.reject(new Error(`Search bridge process error: ${(err as Error).message}`));
-      }
-      this.pending.clear();
       this.started = false;
+      this.rejectAllPending(new Error(`Search bridge process error: ${(err as Error).message}`));
+      this.proc = undefined;
     });
   }
 
+  private rejectAllPending(error: Error): void {
+    for (const [id, call] of this.pending.entries()) {
+      if (call.timeoutHandle) {
+        clearTimeout(call.timeoutHandle);
+      }
+      call.reject(error);
+      this.pending.delete(id);
+    }
+  }
+
   public async stop(): Promise<void> {
-    if (!this.started || !this.proc) {
+    this.shuttingDown = true;
+
+    if (!this.proc) {
+      this.started = false;
       return;
     }
 
-    this.proc.kill();
-    this.proc = undefined;
-    this.started = false;
-    for (const call of this.pending.values()) {
-      call.reject(new Error("search bridge stopped"));
+    const proc = this.proc;
+
+    try {
+      if (proc.stdin && !proc.stdin.destroyed) {
+        const shutdownId = this.nextRequestId++;
+        proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: shutdownId, method: "shutdown" })}\n`, "utf8");
+      }
+    } catch {
+      // best effort only
     }
-    this.pending.clear();
+
+    proc.kill("SIGTERM");
+    const closePromise = once(proc, "close").catch(() => undefined);
+    const timeoutPromise = new Promise((resolve) => setTimeout(resolve, 1_000));
+    await Promise.race([closePromise, timeoutPromise]);
+
+    if (this.started) {
+      proc.kill("SIGKILL");
+      await once(proc, "close").catch(() => undefined);
+    }
+
+    this.started = false;
+    this.proc = undefined;
+    this.rejectAllPending(new Error("search bridge stopped"));
   }
 
   private write(payload: RpcRequest): void {
-    if (!this.proc || !this.proc.stdin) {
+    if (!this.proc || !this.proc.stdin || this.proc.stdin.destroyed) {
       throw new Error("search bridge is not connected");
     }
 
     const line = `${JSON.stringify(payload)}\n`;
-    const ok = this.proc.stdin.write(line, "utf8");
-    if (!ok) {
-      this.proc.stdin.once("drain", () => {
-        this.proc?.stdin?.write("");
-      });
-    }
+    this.proc.stdin.write(line, "utf8");
   }
 
   private handleLine(line: string): void {
@@ -187,15 +211,13 @@ export class SearchBridge {
       }
 
       this.pending.delete(payload.id);
+      if (pending.timeoutHandle) {
+        clearTimeout(pending.timeoutHandle);
+      }
+
       if ("error" in payload) {
-        if (pending.timeoutHandle) {
-          clearTimeout(pending.timeoutHandle);
-        }
         pending.reject(new Error(`${payload.error.code}: ${payload.error.message}`));
       } else {
-        if (pending.timeoutHandle) {
-          clearTimeout(pending.timeoutHandle);
-        }
         pending.resolve(payload.result);
       }
     } catch {
@@ -203,16 +225,39 @@ export class SearchBridge {
     }
   }
 
-  public async call<T>(method: string, params: unknown = undefined): Promise<T> {
-    if (this.started) {
-      await this.stop();
+  private enqueueCall<T>(task: () => Promise<T>): Promise<T> {
+    const nextTask = this.callQueue.then(task, task);
+    this.callQueue = nextTask.then(
+      () => undefined,
+      () => undefined,
+    );
+    return nextTask;
+  }
+
+  private async ensureHealthy(): Promise<void> {
+    if (this.shuttingDown) {
+      throw new Error("search bridge is shutting down");
     }
+
+    if (!this.started || !this.proc || this.proc.killed) {
+      await this.start();
+      return;
+    }
+
+    try {
+      await this.sendRequest("ping", undefined, this.healthCheckTimeoutMs);
+    } catch {
+      await this.restartProcess();
+    }
+  }
+
+  private async restartProcess(): Promise<void> {
+    await this.stop();
+    this.shuttingDown = false;
     await this.start();
+  }
 
-    if (this.pending.size !== 0) {
-      throw new Error("search bridge is currently processing another request");
-    }
-
+  private async sendRequest<T>(method: string, params: unknown, timeoutMs: number): Promise<T> {
     const id = this.nextRequestId++;
     const payload: RpcRequest = {
       jsonrpc: "2.0",
@@ -224,8 +269,8 @@ export class SearchBridge {
     return await new Promise<unknown>((resolve, reject) => {
       const timeoutHandle = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`search bridge timed out after ${this.requestTimeoutMs}ms`));
-      }, this.requestTimeoutMs);
+        reject(new Error(`search bridge timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
 
       this.pending.set(id, {
         resolve,
@@ -235,19 +280,28 @@ export class SearchBridge {
 
       try {
         this.write(payload);
-        this.proc?.stdin?.end();
       } catch (err) {
         clearTimeout(timeoutHandle);
         this.pending.delete(id);
         reject(err as Error);
       }
-    }).then((value) => {
-      const call = this.pending.get(id);
-      if (call?.timeoutHandle) {
-        clearTimeout(call.timeoutHandle);
+    }) as T;
+  }
+
+  public async call<T>(method: string, params: unknown = undefined): Promise<T> {
+    return this.enqueueCall(async () => {
+      await this.ensureHealthy();
+
+      try {
+        return await this.sendRequest<T>(method, params, this.requestTimeoutMs);
+      } catch (error) {
+        if (this.shuttingDown) {
+          throw error;
+        }
+
+        await this.restartProcess();
+        return await this.sendRequest<T>(method, params, this.requestTimeoutMs);
       }
-      this.pending.delete(id);
-      return value as T;
     });
   }
 }
