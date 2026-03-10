@@ -82,3 +82,6 @@ jobs:
 
       - name: Run search regression checks
         run: bun run ci:search-regression
+
+      - name: Run benchmark threshold checks
+        run: bun run ci:bench

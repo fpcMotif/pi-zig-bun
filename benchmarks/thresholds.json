@@ -1,0 +1,20 @@
+{
+  "search_latency_p95_50k_files": {
+    "targetMs": 10,
+    "tolerancePct": 35,
+    "rerunAttempts": 2,
+    "value": "p95"
+  },
+  "initial_index_time_50k_files": {
+    "targetMs": 2000,
+    "tolerancePct": 20,
+    "rerunAttempts": 2,
+    "value": "p95"
+  },
+  "cold_start_time": {
+    "targetMs": 150,
+    "tolerancePct": 35,
+    "rerunAttempts": 2,
+    "value": "p95"
+  }
+}

@@ -60,3 +60,20 @@ CACHE_VERSION: v3
 
 This forces fresh cache entries on the next run.
 
+
+
+## Benchmarks
+
+Run the benchmark suite (includes 50k-file fixture generation/reuse and p50/p95 output table):
+
+```bash
+bun run bench
+```
+
+Benchmark CI threshold checks (with tolerances + rerun policy):
+
+```bash
+bun run ci:bench
+```
+
+See `docs/benchmarks.md` for assumptions and metric definitions.
