@@ -17,10 +17,26 @@ const SearchEntry = struct {
     size: u64,
 };
 
+const GitFileStatus = enum {
+    clean,
+    modified,
+    untracked,
+};
+
+const ScoreBreakdown = struct {
+    fuzzy_score: i32,
+    git_bonus: i32,
+    frecency_bonus: i32,
+    proximity_bonus: i32,
+};
+
 const SearchState = struct {
     allocator: Allocator,
     entries: ArrayList(SearchEntry, null),
     ignore_patterns: ArrayList([]const u8, null),
+    git_status: std.StringHashMapUnmanaged(GitFileStatus),
+    frecency: std.StringHashMapUnmanaged(u32),
+    frecency_store_path: ?[]const u8,
     root: ?[]const u8,
 
     pub fn init(allocator: Allocator) SearchState {
@@ -28,6 +44,9 @@ const SearchState = struct {
             .allocator = allocator,
             .entries = .init(allocator),
             .ignore_patterns = .init(allocator),
+            .git_status = .empty,
+            .frecency = .empty,
+            .frecency_store_path = null,
             .root = null,
         };
     }
@@ -36,6 +55,9 @@ const SearchState = struct {
         self.clearIndex();
         self.entries.deinit();
         self.ignore_patterns.deinit();
+        self.clearGitStatus();
+        self.clearFrecency();
+        if (self.frecency_store_path) |path| self.allocator.free(path);
         if (self.root) |root| self.allocator.free(root);
     }
 
@@ -53,6 +75,29 @@ const SearchState = struct {
             self.allocator.free(pattern);
         }
         self.ignore_patterns.clearRetainingCapacity();
+
+        self.clearGitStatus();
+        self.clearFrecency();
+        if (self.frecency_store_path) |path| {
+            self.allocator.free(path);
+            self.frecency_store_path = null;
+        }
+    }
+
+    fn clearGitStatus(self: *SearchState) void {
+        var it = self.git_status.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.git_status.clearAndFree(self.allocator);
+    }
+
+    fn clearFrecency(self: *SearchState) void {
+        var it = self.frecency.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.frecency.clearAndFree(self.allocator);
     }
 
     pub fn ensureIndex(self: *SearchState, root: []const u8) !void {
@@ -77,6 +122,88 @@ const SearchState = struct {
 
         try self.loadIgnorePatterns(root);
         try self.scanDirectory(root, "");
+        try self.loadGitStatus(root);
+        try self.loadFrecencyStore(root);
+    }
+
+    fn loadGitStatus(self: *SearchState, root: []const u8) !void {
+        const result = std.process.Child.run(.{
+            .allocator = self.allocator,
+            .argv = &.{ "git", "-C", root, "status", "--porcelain", "--untracked-files=all" },
+            .max_output_bytes = 1024 * 1024,
+        }) catch return;
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+
+        if (result.term != .Exited or result.term.Exited != 0) return;
+
+        var lines = mem.splitScalar(u8, result.stdout, '\n');
+        while (lines.next()) |line_raw| {
+            const line = trimSpace(line_raw);
+            if (line.len < 4) continue;
+
+            const status_code = line[0..2];
+            var rel_path = trimSpace(line[3..]);
+            if (mem.indexOf(u8, rel_path, " -> ")) |arrow| {
+                rel_path = rel_path[arrow + 4 ..];
+            }
+            if (rel_path.len == 0) continue;
+
+            const status: GitFileStatus = if (status_code[0] == '?' and status_code[1] == '?') .untracked else .modified;
+            const key = try self.allocator.dupe(u8, rel_path);
+            try self.git_status.put(self.allocator, key, status);
+        }
+    }
+
+    fn loadFrecencyStore(self: *SearchState, root: []const u8) !void {
+        const hash = std.hash.Wyhash.hash(0, root);
+        const home = std.posix.getenv("HOME");
+
+        const store_path = if (home) |home_dir|
+            try std.fmt.allocPrint(self.allocator, "{s}/.pi/cache/search/{x}/frecency.tsv", .{ home_dir, hash })
+        else
+            try std.fmt.allocPrint(self.allocator, "{s}/.pi/cache/search/{x}/frecency.tsv", .{ root, hash });
+        self.frecency_store_path = store_path;
+
+        if (fs.path.dirname(store_path)) |store_dir| {
+            fs.cwd().makePath(store_dir) catch {};
+        }
+
+        var file = fs.cwd().openFile(store_path, .{}) catch return;
+        defer file.close();
+
+        const content = try file.readToEndAlloc(self.allocator, max_file_read_bytes);
+        defer self.allocator.free(content);
+
+        var lines = mem.splitScalar(u8, content, '\n');
+        while (lines.next()) |line_raw| {
+            const line = trimSpace(line_raw);
+            if (line.len == 0) continue;
+
+            var parts = mem.splitScalar(u8, line, '\t');
+            const rel_path = parts.next() orelse continue;
+            const score_raw = parts.next() orelse continue;
+            const score = std.fmt.parseInt(u32, score_raw, 10) catch continue;
+
+            const key = try self.allocator.dupe(u8, rel_path);
+            try self.frecency.put(self.allocator, key, score);
+        }
+    }
+
+    fn persistFrecencyStore(self: *SearchState) !void {
+        const store_path = self.frecency_store_path orelse return;
+        var file = try fs.cwd().createFile(store_path, .{ .truncate = true });
+        defer file.close();
+
+        var out_buffer: [4096]u8 = undefined;
+        var file_writer = file.writer(&out_buffer);
+        const writer = &file_writer.interface;
+
+        var it = self.frecency.iterator();
+        while (it.next()) |entry| {
+            try writer.print("{s}\t{d}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+        }
+        try writer.flush();
     }
 
     fn loadIgnorePatterns(self: *SearchState, root: []const u8) !void {
@@ -217,6 +344,7 @@ const FileSearchResult = struct {
     score: i32,
     match_type: []const u8,
     rank: usize,
+    score_breakdown: ?ScoreBreakdown = null,
 };
 
 const GrepResponse = struct {
@@ -487,9 +615,15 @@ fn matchFileByName(entry: SearchEntry, name_filter: ?[]const u8) bool {
     return mem.indexOf(u8, entry.file_name_lower, filter) != null;
 }
 
-const FileHit = struct { entry: SearchEntry, score: i32, match_type: []const u8, rank: usize };
+const FileHit = struct {
+    entry: SearchEntry,
+    score: i32,
+    match_type: []const u8,
+    rank: usize,
+    breakdown: ScoreBreakdown,
+};
 
-fn scorePathMatch(query: ParsedQuery, candidate: SearchEntry, max_typos: usize, allocator: Allocator) !?struct { score: i32, match_type: []const u8 } {
+fn scorePathMatch(query: ParsedQuery, candidate: SearchEntry, max_typos: usize, allocator: Allocator) !?struct { score: i32, match_type: []const u8, fuzzy_score: i32 } {
     if (query.normalized.len == 0) return null;
 
     var best_score: i32 = 0;
@@ -520,15 +654,48 @@ fn scorePathMatch(query: ParsedQuery, candidate: SearchEntry, max_typos: usize, 
         }
     }
 
-    if (best_score > 0) {
-        // Freshness bonus up to 80 points.
-        const age_ms = @max(0, std.time.milliTimestamp() - candidate.modified_ms);
-        const age_minutes = @as(i32, @intCast(@mod(@divFloor(age_ms, 60_000), 200)));
-        best_score += @max(0, 80 - @divTrunc(age_minutes, 2));
-    }
-
-    return .{ .score = best_score, .match_type = best_type };
+    return .{ .score = best_score, .match_type = best_type, .fuzzy_score = best_score };
 }
+
+fn gitBonus(state: *SearchState, rel_path: []const u8) i32 {
+    const status = state.git_status.get(rel_path) orelse .clean;
+    return switch (status) {
+        .clean => 0,
+        .modified => 120,
+        .untracked => 90,
+    };
+}
+
+fn frecencyBonus(state: *SearchState, rel_path: []const u8) i32 {
+    const score = state.frecency.get(rel_path) orelse 0;
+    return @min(@as(i32, @intCast(score * 20)), 200);
+}
+
+fn pathDepth(path_value: []const u8) usize {
+    if (path_value.len == 0) return 0;
+    var depth: usize = 1;
+    for (path_value) |ch| {
+        if (ch == fs.path.sep) depth += 1;
+    }
+    return depth;
+}
+
+fn proximityBonus(cwd: []const u8, root: []const u8, entry: SearchEntry) i32 {
+    if (cwd.len == 0 or !mem.startsWith(u8, cwd, root)) return 0;
+    if (cwd.len == root.len) return 0;
+
+    var rel_cwd = cwd[root.len..];
+    rel_cwd = mem.trimLeft(u8, rel_cwd, &.{fs.path.sep});
+    if (rel_cwd.len == 0) return 0;
+    if (!mem.startsWith(u8, entry.rel_path, rel_cwd)) return 0;
+
+    const cwd_depth = pathDepth(rel_cwd);
+    const file_depth = pathDepth(entry.rel_path);
+    const distance = if (file_depth > cwd_depth) file_depth - cwd_depth else 0;
+    const raw = 100 - @as(i32, @intCast(distance * 20));
+    return @max(raw, 0);
+}
+
 
 fn levenshteinLimited(allocator: Allocator, a: []const u8, b: []const u8, max_dist: usize) ?usize {
     if (a.len == 0) return if (b.len <= max_dist) b.len else null;
@@ -651,7 +818,14 @@ fn searchFiles(
             if (maybe_hit == null) continue;
             const hit = maybe_hit.?;
 
-            try matches.append(.{ .entry = entry, .score = hit.score, .match_type = hit.match_type, .rank = 0 });
+            const breakdown = ScoreBreakdown{
+                .fuzzy_score = hit.fuzzy_score,
+                .git_bonus = gitBonus(state, entry.rel_path),
+                .frecency_bonus = frecencyBonus(state, entry.rel_path),
+                .proximity_bonus = proximityBonus(parsed.cwd, state.root orelse "", entry),
+            };
+            const total_score = breakdown.fuzzy_score + breakdown.git_bonus + breakdown.frecency_bonus + breakdown.proximity_bonus;
+            try matches.append(.{ .entry = entry, .score = total_score, .match_type = hit.match_type, .rank = 0, .breakdown = breakdown });
         }
     }
 
@@ -663,7 +837,14 @@ fn searchFiles(
 
             const fresh = scoreByFallbackRecent(entry);
             if (fresh <= 0) continue;
-            try matches.append(.{ .entry = entry, .score = fresh, .match_type = "fallback", .rank = 0 });
+            const breakdown = ScoreBreakdown{
+                .fuzzy_score = fresh,
+                .git_bonus = gitBonus(state, entry.rel_path),
+                .frecency_bonus = frecencyBonus(state, entry.rel_path),
+                .proximity_bonus = proximityBonus(parsed.cwd, state.root orelse "", entry),
+            };
+            const total_score = breakdown.fuzzy_score + breakdown.git_bonus + breakdown.frecency_bonus + breakdown.proximity_bonus;
+            try matches.append(.{ .entry = entry, .score = total_score, .match_type = "fallback", .rank = 0, .breakdown = breakdown });
         }
     }
 
@@ -687,8 +868,21 @@ fn searchFiles(
             .score = hit.score,
             .match_type = hit.match_type,
             .rank = hit.rank,
+            .score_breakdown = if (parsed.include_scores) hit.breakdown else null,
         });
     }
+
+    var j = offset;
+    while (j < end) : (j += 1) {
+        const hit = matches.items[j];
+        const gop = try state.frecency.getOrPut(state.allocator, hit.entry.rel_path);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try state.allocator.dupe(u8, hit.entry.rel_path);
+            gop.value_ptr.* = 0;
+        }
+        gop.value_ptr.* +|= 1;
+    }
+    state.persistFrecencyStore() catch {};
 
     const elapsed_ms = std.time.milliTimestamp() - start;
     const response = FileSearchResponse{
@@ -1023,4 +1217,84 @@ pub fn main() !void {
     }
 
     try out_writer.flush();
+}
+
+test "ranking bonuses reorder equal fuzzy matches from fixture paths" {
+    const allocator = std.testing.allocator;
+    var state = SearchState.init(allocator);
+    defer state.deinit();
+
+    const root = try allocator.dupe(u8, "/fixture");
+    defer allocator.free(root);
+    state.root = try allocator.dupe(u8, root);
+
+    const git_key = try allocator.dupe(u8, "src/zig/test-fixtures/search-ranking/feature/alpha-match.txt");
+    try state.git_status.put(allocator, git_key, .modified);
+    const frecent_key = try allocator.dupe(u8, "src/zig/test-fixtures/search-ranking/docs/alpha-peer.txt");
+    try state.frecency.put(allocator, frecent_key, 6);
+
+    const query = ParsedQuery{
+        .raw = "alpha",
+        .normalized = try allocator.dupe(u8, "alpha"),
+        .ext_filter = null,
+        .path_filter = null,
+        .name_filter = null,
+        .query_owned = false,
+    };
+    defer allocator.free(query.normalized);
+
+    const boosted = SearchEntry{
+        .abs_path = "/fixture/src/zig/test-fixtures/search-ranking/feature/alpha-match.txt",
+        .rel_path = "src/zig/test-fixtures/search-ranking/feature/alpha-match.txt",
+        .rel_path_lower = "src/zig/test-fixtures/search-ranking/feature/alpha-match.txt",
+        .file_name = "alpha-match.txt",
+        .file_name_lower = "alpha-match.txt",
+        .modified_ms = 0,
+        .size = 1,
+    };
+    const plain = SearchEntry{
+        .abs_path = "/fixture/src/zig/test-fixtures/search-ranking/docs/alpha-peer.txt",
+        .rel_path = "src/zig/test-fixtures/search-ranking/docs/alpha-peer.txt",
+        .rel_path_lower = "src/zig/test-fixtures/search-ranking/docs/alpha-peer.txt",
+        .file_name = "alpha-peer.txt",
+        .file_name_lower = "alpha-peer.txt",
+        .modified_ms = 0,
+        .size = 1,
+    };
+
+    const boosted_hit = (try scorePathMatch(query, boosted, 0, allocator)).?;
+    const plain_hit = (try scorePathMatch(query, plain, 0, allocator)).?;
+
+    try std.testing.expectEqual(boosted_hit.fuzzy_score, plain_hit.fuzzy_score);
+
+    const boosted_total = boosted_hit.fuzzy_score + gitBonus(&state, boosted.rel_path) + frecencyBonus(&state, boosted.rel_path) + proximityBonus("/fixture", root, boosted);
+    const plain_total = plain_hit.fuzzy_score + gitBonus(&state, plain.rel_path) + frecencyBonus(&state, plain.rel_path) + proximityBonus("/fixture", root, plain);
+
+    try std.testing.expect(boosted_total > plain_total);
+}
+
+test "proximity bonus prefers cwd-local deeper matches" {
+    const entry_near = SearchEntry{
+        .abs_path = "/repo/apps/alpha/file.zig",
+        .rel_path = "apps/alpha/file.zig",
+        .rel_path_lower = "apps/alpha/file.zig",
+        .file_name = "file.zig",
+        .file_name_lower = "file.zig",
+        .modified_ms = 0,
+        .size = 1,
+    };
+    const entry_far = SearchEntry{
+        .abs_path = "/repo/lib/alpha/file.zig",
+        .rel_path = "lib/alpha/file.zig",
+        .rel_path_lower = "lib/alpha/file.zig",
+        .file_name = "file.zig",
+        .file_name_lower = "file.zig",
+        .modified_ms = 0,
+        .size = 1,
+    };
+
+    const near_bonus = proximityBonus("/repo/apps", "/repo", entry_near);
+    const far_bonus = proximityBonus("/repo/apps", "/repo", entry_far);
+
+    try std.testing.expect(near_bonus > far_bonus);
 }

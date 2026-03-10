@@ -1,8 +1,16 @@
+export interface SearchScoreBreakdown {
+  fuzzy_score: number;
+  git_bonus: number;
+  frecency_bonus: number;
+  proximity_bonus: number;
+}
+
 export interface SearchFileResultItem {
   path: string;
   score: number;
   matchType: "exact" | "prefix" | "substring" | "fuzzy";
   rank: number;
+  score_breakdown?: SearchScoreBreakdown | null;
 }
 
 export interface SearchFilesResponse {
