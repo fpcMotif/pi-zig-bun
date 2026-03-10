@@ -6,7 +6,7 @@ import { parseCli, usage } from "./cli";
 import { SessionStore, SessionTree } from "./session/tree";
 import { MemoryToolRegistry, type Tool } from "./tools/types";
 import { builtinTools } from "./tools/builtin";
-import { CapabilityManager, type ToolResult } from "./permissions";
+import { CapabilityManager, loadCapabilityPolicy, type ToolResult } from "./permissions";
 import { loadSkills } from "./extensions/loader";
 
 interface AppRuntime {
@@ -139,12 +139,10 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
 
   const search = SearchClient.from({ workspaceRoot: args.cwd });
   await search.ensureInitialized(args.cwd);
-  const capabilities = new CapabilityManager({
-    "fs.read": "*",
-    "fs.write": "*",
-    "fs.execute": "*",
-    "session.access": "*",
-    "net.http": "*",
+  const policy = loadCapabilityPolicy(args.cwd);
+  const capabilities = new CapabilityManager(policy, {
+    workspaceRoot: args.cwd,
+    auditLogPath: path.join(args.cwd, ".pi", "audit.log"),
   });
 
   const registry = new MemoryToolRegistry();
