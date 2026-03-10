@@ -5,7 +5,17 @@ export interface ParsedCli {
   cwd: string;
   limit: number;
   rootSession?: string;
+  provider?: "openai" | "anthropic" | "google";
+  model?: string;
+  tokenBudget?: number;
   help: boolean;
+}
+
+function parseProvider(raw: string): ParsedCli["provider"] {
+  if (raw === "openai" || raw === "anthropic" || raw === "google") {
+    return raw;
+  }
+  return undefined;
 }
 
 function normalizeCommand(raw: string): ParsedCli["command"] {
@@ -84,6 +94,30 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
         options.rootSession = args[i + 1]!;
         i += 2;
         continue;
+      case "--provider":
+        if (args[i + 1] === undefined) {
+          throw new Error(`Missing value for ${token}`);
+        }
+        options.provider = parseProvider(args[i + 1]!);
+        i += 2;
+        continue;
+      case "--model":
+        if (args[i + 1] === undefined) {
+          throw new Error(`Missing value for ${token}`);
+        }
+        options.model = args[i + 1]!;
+        i += 2;
+        continue;
+      case "--token-budget":
+        if (args[i + 1] === undefined) {
+          throw new Error(`Missing value for ${token}`);
+        }
+        options.tokenBudget = Number.parseInt(args[i + 1]!, 10);
+        if (!Number.isFinite(options.tokenBudget) || options.tokenBudget <= 0) {
+          options.tokenBudget = undefined;
+        }
+        i += 2;
+        continue;
       default:
         i += 1;
     }
@@ -116,6 +150,9 @@ export function usage(): string {
     "  -c, --cwd <path>          Workspace root for index and sessions",
     "  -l, --limit <n>           Max results (default 50)",
     "  -r, --root-session <id>    Continue from a branch root session",
+    "      --provider <name>      Agent provider: openai|anthropic|google",
+    "      --model <name>         Agent model override",
+    "      --token-budget <n>     Conversation token budget",
     "",
     "Interactive mode (default):",
     "  /search <query>            Run file search",

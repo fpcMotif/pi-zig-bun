@@ -8,11 +8,21 @@ import { MemoryToolRegistry, type Tool } from "./tools/types";
 import { builtinTools } from "./tools/builtin";
 import { CapabilityManager, type ToolResult } from "./permissions";
 import { loadSkills } from "./extensions/loader";
+import {
+  ConversationContextManager,
+  createProviderClient,
+  missingApiKeyMessage,
+  resolveAgentSelection,
+  type AgentMessage,
+  type ProviderClient,
+} from "./agent";
 
 interface AppRuntime {
   search: SearchClient;
   sessionTree: SessionTree;
   capabilities: CapabilityManager;
+  agent?: ProviderClient;
+  contextManager: ConversationContextManager;
 }
 
 function registerBuiltinTools(registry: MemoryToolRegistry): void {
@@ -69,6 +79,34 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
   process.stdout.write("pi-zig-bun interactive\n");
   process.stdout.write("Type /help for commands.\n");
 
+  const replyWithAgent = async (prompt: string): Promise<void> => {
+    const userTurn = await runtime.sessionTree.fork(currentTurn, "user", prompt);
+    currentTurn = userTurn.id;
+
+    if (!runtime.agent) {
+      const message = "Agent is unavailable. Configure provider credentials to enable assistant replies.";
+      console.log(message);
+      const assistantTurn = await runtime.sessionTree.fork(currentTurn, "assistant", message);
+      currentTurn = assistantTurn.id;
+      return;
+    }
+
+    const history = await runtime.sessionTree.history(currentTurn);
+    const messages: AgentMessage[] = history.map((turn) => ({ role: turn.role, content: turn.content }));
+    const prepared = await runtime.contextManager.prepare(messages);
+
+    process.stdout.write("assistant> ");
+    const assistantText = await runtime.agent.streamMessage(prepared, (event) => {
+      if (event.type === "token" && event.token) {
+        process.stdout.write(event.token);
+      }
+    });
+    process.stdout.write("\n");
+
+    const assistantTurn = await runtime.sessionTree.fork(currentTurn, "assistant", assistantText);
+    currentTurn = assistantTurn.id;
+  };
+
   for await (const line of iface) {
     const trimmed = line.trim();
     if (!trimmed) {
@@ -116,8 +154,21 @@ async function runInteractive(runtime: AppRuntime, json: boolean): Promise<void>
       continue;
     }
 
-    console.log("Unsupported command. Use /help for supported commands.");
-    currentTurn = (await runtime.sessionTree.fork(currentTurn, "user", trimmed)).id;
+    if (trimmed.startsWith("/")) {
+      console.log("Unsupported command. Use /help for supported commands.");
+      currentTurn = (await runtime.sessionTree.fork(currentTurn, "user", trimmed)).id;
+      iface.prompt();
+      continue;
+    }
+
+    try {
+      await replyWithAgent(trimmed);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`agent error: ${message}`);
+      const assistantTurn = await runtime.sessionTree.fork(currentTurn, "assistant", `Error: ${message}`);
+      currentTurn = assistantTurn.id;
+    }
     iface.prompt();
   }
 
@@ -154,10 +205,29 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
     path.join(process.cwd(), ".pi", "skills"),
   ]);
 
+  const selection = await resolveAgentSelection(args.cwd, {
+    provider: args.provider,
+    model: args.model,
+    tokenBudget: args.tokenBudget,
+  });
+  let agent: ProviderClient | undefined;
+  if (!selection.apiKey) {
+    if (!args.json) {
+      console.warn(`Agent disabled: ${missingApiKeyMessage(selection.provider)}`);
+    }
+  } else {
+    agent = createProviderClient(selection.provider, {
+      model: selection.model,
+      apiKey: selection.apiKey,
+    });
+  }
+
   const runtime: AppRuntime = {
     search,
     sessionTree: new SessionTree(new SessionStore(args.cwd)),
     capabilities,
+    agent,
+    contextManager: new ConversationContextManager({ tokenBudget: selection.tokenBudget }),
   };
 
   switch (args.command) {
