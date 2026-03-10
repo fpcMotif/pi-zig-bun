@@ -8,7 +8,14 @@
     "precommit": "./scripts/pre-commit.sh",
     "validate": "bunx tsc --noEmit",
     "ci:search-regression": "bun scripts/ci-search-regression.ts",
-    "ci": "bun run validate && zig build && bun run ci:search-regression"
+    "ci": "bun run validate && bun run test:unit && bun run test:integration && bun run ci:acceptance && zig build && bun run ci:search-regression",
+    "test:unit": "bun test tests/unit",
+    "test:integration": "bun test tests/integration",
+    "test:perf:search": "bun tests/perf/search-benchmark.ts",
+    "test:perf:init": "bun tests/perf/init-benchmark.ts",
+    "test:perf:cold-start": "bun tests/perf/cold-start-benchmark.ts",
+    "ci:acceptance": "bun scripts/verify-acceptance-traceability.ts",
+    "ci:perf": "bun run test:perf:search && bun run test:perf:init && bun run test:perf:cold-start"
   },
   "devDependencies": {
     "@types/bun": "latest"
