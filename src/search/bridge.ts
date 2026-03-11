@@ -74,6 +74,20 @@ export class SearchBridge {
     return candidates[0]!;
   }
 
+  private scrub(text: string): string {
+    let scrubbed = text;
+    const replacements = [
+      { path: this.binaryPath, replacement: "[BINARY_PATH]" },
+      { path: this.workspaceRoot, replacement: "[WORKSPACE_ROOT]" }
+    ].sort((a, b) => b.path.length - a.path.length);
+
+    for (const { path, replacement } of replacements) {
+      scrubbed = scrubbed.split(path).join(replacement);
+    }
+
+    return scrubbed;
+  }
+
   public async start(): Promise<void> {
     if (this.started) {
       return;
@@ -115,7 +129,7 @@ export class SearchBridge {
           if (!existsSync(piDir)) {
             mkdirSync(piDir, { recursive: true });
           }
-          appendFileSync(stderrLog, chunk);
+          appendFileSync(stderrLog, this.scrub(chunk.toString()));
         } catch {
           // ignore logging errors to prevent breaking the bridge
         }
