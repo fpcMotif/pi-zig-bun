@@ -115,7 +115,8 @@ export class SearchBridge {
           if (!existsSync(piDir)) {
             mkdirSync(piDir, { recursive: true });
           }
-          appendFileSync(stderrLog, chunk);
+          const scrubbed = this.scrub(chunk.toString());
+          appendFileSync(stderrLog, scrubbed);
         } catch {
           // ignore logging errors to prevent breaking the bridge
         }
@@ -190,6 +191,26 @@ export class SearchBridge {
     // Backpressure is acceptable here: Node buffers the data internally
     // and flushes when the kernel is ready. No additional drain handling
     // needed for newline-delimited JSON-RPC over stdin.
+  }
+
+  private scrub(text: string): string {
+    const paths = [
+      { path: this.binaryPath, placeholder: "[BINARY_PATH]" },
+      { path: this.workspaceRoot, placeholder: "[WORKSPACE_ROOT]" },
+    ];
+
+    // Sort paths by length descending to ensure we scrub longer paths first
+    // (e.g. if one is a prefix of another).
+    paths.sort((a, b) => b.path.length - a.path.length);
+
+    let result = text;
+    for (const entry of paths) {
+      if (entry.path) {
+        // Use split/join for simple global replacement without needing to escape regex special characters in paths
+        result = result.split(entry.path).join(entry.placeholder);
+      }
+    }
+    return result;
   }
 
   private handleLine(line: string): void {
