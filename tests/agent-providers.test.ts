@@ -352,3 +352,54 @@ describe("GoogleGenAIAdapter", () => {
     expect(chunk.token).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// BaseSseAgent Error Handling
+// ---------------------------------------------------------------------------
+describe("BaseSseAgent Error Handling", () => {
+  test("ignores invalid JSON chunks and continues processing", async () => {
+    // create a fake stream that yields invalid json then valid json
+    const fakeStream = new ReadableStream({
+      start(controller) {
+        const encoder = new TextEncoder();
+        // invalid JSON
+        controller.enqueue(encoder.encode("data: { invalid json }\n\n"));
+        // valid JSON chunk
+        controller.enqueue(
+          encoder.encode(
+            "data: {\"choices\": [{\"delta\": {\"content\": \"hello\"}, \"finish_reason\": null}]}\n\n"
+          )
+        );
+        // DONE
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.close();
+      },
+    });
+
+    const fakeResponse = new Response(fakeStream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+
+    // Mock global fetch
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (() => Promise.resolve(fakeResponse)) as unknown as typeof fetch;
+
+    try {
+      const adapter = new OpenAIAdapter("fake-key");
+      const stream = await adapter.stream({ messages: [{ role: "user", content: "hi" }] });
+
+      const events = [];
+      for await (const event of stream.events) {
+        events.push(event);
+      }
+
+      // Check if "hello" is parsed despite the preceding invalid JSON
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]).toEqual({ type: "token", token: "hello" });
+      expect(events[1]).toEqual({ type: "done", response: { text: "hello", toolCalls: [] } });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
