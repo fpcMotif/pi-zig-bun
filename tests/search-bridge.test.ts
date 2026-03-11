@@ -4,38 +4,30 @@ import path from "node:path";
 import os from "node:os";
 import { SearchBridge } from "../src/search/bridge";
 
-async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash" | "stderr" | "malformed" | "rpc_error"): Promise<{ root: string; binaryPath: string }> {
+async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash" | "stderr" | "stderr_sensitive" | "malformed" | "rpc_error"): Promise<{ root: string; binaryPath: string }> {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-bridge-"));
   const binaryPath = path.join(root, "fake-bridge.mjs");
-  const script = `#!/usr/bin/env node
-import readline from "node:readline";
-const mode = ${JSON.stringify(mode)};
-const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
-rl.on("line", (line) => {
-  const req = JSON.parse(line);
-  if (mode === "crash") {
-    process.exit(7);
-  }
-  if (mode === "stderr") {
-    process.stderr.write("some error output\\n");
-  }
-  if (mode === "timeout") {
-    return;
-  }
-  if (mode === "malformed") {
-    process.stdout.write("not json\\n");
-    // Fallthrough to write actual result so we can test it ignored the malformed line
-  }
-  if (mode === "rpc_error") {
-    const errorPayload = JSON.stringify({ jsonrpc: "2.0", id: req.id, error: { code: -32600, message: "Invalid Request" } });
-    process.stdout.write(errorPayload + "\\n");
-    return;
-  }
-  const payload = JSON.stringify({ jsonrpc: "2.0", id: req.id, result: { method: req.method, echoed: req.params ?? null } });
-  process.stdout.write(payload.slice(0, Math.floor(payload.length / 2)));
-  setTimeout(() => process.stdout.write(payload.slice(Math.floor(payload.length / 2)) + "\\n"), 5);
-});
-`;
+  const script = "#!/usr/bin/env node\n" +
+"import readline from \"node:readline\";\n" +
+"const mode = " + JSON.stringify(mode) + ";\n" +
+"const binPath = " + JSON.stringify(binaryPath) + ";\n" +
+"const workRoot = " + JSON.stringify(root) + ";\n" +
+"const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });\n" +
+"rl.on(\"line\", (line) => {\n" +
+"  const req = JSON.parse(line);\n" +
+"  if (mode === \"crash\") { process.exit(7); }\n" +
+"  if (mode === \"stderr\") { process.stderr.write(\"some error output\\n\"); }\n" +
+"  if (mode === \"stderr_sensitive\") { process.stderr.write(\"Error occurred at binary \" + binPath + \" in workspace \" + workRoot + \"\\n\"); }\n" +
+"  if (mode === \"timeout\") { return; }\n" +
+"  if (mode === \"malformed\") { process.stdout.write(\"not json\\n\"); }\n" +
+"  if (mode === \"rpc_error\") {\n" +
+"    const errorPayload = JSON.stringify({ jsonrpc: \"2.0\", id: req.id, error: { code: -32600, message: \"Invalid Request\" } });\n" +
+"    process.stdout.write(errorPayload + \"\\n\"); return;\n" +
+"  }\n" +
+"  const payload = JSON.stringify({ jsonrpc: \"2.0\", id: req.id, result: { method: req.method, echoed: req.params ?? null } });\n" +
+"  process.stdout.write(payload.slice(0, Math.floor(payload.length / 2)));\n" +
+"  setTimeout(() => process.stdout.write(payload.slice(Math.floor(payload.length / 2)) + \"\\n\"), 5);\n" +
+"});\n";
   await writeFile(binaryPath, script, "utf8");
   await chmod(binaryPath, 0o755);
   return { root, binaryPath };
@@ -100,6 +92,29 @@ describe("SearchBridge protocol behavior", () => {
       const second = bridge.call("search.files", { query: "b" });
       const results = await Promise.allSettled([first, second]);
       expect(results.some((item) => item.status === "rejected")).toBe(true);
+    } finally {
+      await bridge.stop();
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+
+
+  test("scrubs sensitive paths from stderr log output", async () => {
+    const fixture = await createFakeBridgeBinary("stderr_sensitive");
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    try {
+      await bridge.call("search.files", { query: "abc" });
+
+      // Wait a tiny bit for the async write to complete
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      const { readFile } = await import("node:fs/promises");
+      const logContent = await readFile(path.join(fixture.root, ".pi", "search-bridge.stderr.log"), "utf8");
+
+      expect(logContent).toContain("Error occurred at binary [BINARY_PATH] in workspace [WORKSPACE_ROOT]");
+      expect(logContent).not.toContain(fixture.root);
+      expect(logContent).not.toContain(fixture.binaryPath);
     } finally {
       await bridge.stop();
       await rm(fixture.root, { recursive: true, force: true });
