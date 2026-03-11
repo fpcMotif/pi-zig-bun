@@ -5,7 +5,7 @@ const activeControllers = new Map<string, AbortController>();
 
 class AsyncQueue<T> {
   private buffer: T[] = [];
-  private resolve: ((value: IteratorResult<T>) => void) | null = null;
+  private resolve: ((value: IteratorResult<T, void>) => void) | null = null;
   private closed = false;
 
   push(item: T): void {
@@ -24,20 +24,20 @@ class AsyncQueue<T> {
     if (this.resolve) {
       const r = this.resolve;
       this.resolve = null;
-      r({ value: undefined as any, done: true });
+      r({ value: undefined, done: true });
     }
   }
 
-  [Symbol.asyncIterator](): AsyncIterator<T> {
+  [Symbol.asyncIterator](): AsyncIterator<T, void> {
     return {
-      next: (): Promise<IteratorResult<T>> => {
+      next: (): Promise<IteratorResult<T, void>> => {
         if (this.buffer.length > 0) {
           return Promise.resolve({ value: this.buffer.shift()!, done: false });
         }
         if (this.closed) {
-          return Promise.resolve({ value: undefined as any, done: true });
+          return Promise.resolve({ value: undefined, done: true });
         }
-        return new Promise<IteratorResult<T>>((resolve) => {
+        return new Promise<IteratorResult<T, void>>((resolve) => {
           this.resolve = resolve;
         });
       },
