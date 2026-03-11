@@ -12,6 +12,31 @@ async function tempDir(prefix: string): Promise<string> {
 }
 
 describe("loadSkills", () => {
+
+  test("skips invalid capabilities in register", async () => {
+    const root = await tempDir("pi-skill-");
+    try {
+      await writeFile(
+        path.join(root, "invalid-cap.ts"),
+        `export default {
+          name: "invalid-cap",
+          register() {
+            throw new Error("Invalid capabilities");
+          }
+        }`,
+        "utf8"
+      );
+
+      const registry = new MemoryToolRegistry();
+      const result = await loadSkills(registry, [root]);
+      expect(result.loaded).toBe(0);
+      expect(result.failed).toBe(1);
+      expect(result.errors[0]).toContain("Invalid capabilities");
+      expect(registry.list()).toHaveLength(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
   test("discovers and registers valid extensions", async () => {
     const root = await tempDir("pi-skill-");
     try {
