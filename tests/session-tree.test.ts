@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, appendFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { SessionStore, SessionTree } from "../src/session/tree";
@@ -124,6 +124,26 @@ describe("SessionTree invariants", () => {
       const tree = new SessionTree(store);
 
       await expect(tree.fork("non-existent-id", "user", "should fail")).rejects.toThrow();
+    });
+  });
+
+  test("deserialize skips malformed lines without throwing", async () => {
+    await withTempWorkspace(async (root) => {
+      const store = new SessionStore(root);
+      const tree = new SessionTree(store);
+
+      const rootTurn = await tree.createRoot("system", "root");
+      const userTurn = await tree.fork(rootTurn.id, "user", "hello");
+
+      // forcefully append malformed line to store
+      const sessionPath = path.join(root, ".pi", "sessions.jsonl");
+      await appendFile(sessionPath, "this is a malformed line that is not json\n", "utf8");
+
+      const assistantTurn = await tree.fork(userTurn.id, "assistant", "hi");
+
+      const turns = await store.allTurns();
+      expect(turns).toHaveLength(3);
+      expect(turns.map(t => t.id)).toEqual([rootTurn.id, userTurn.id, assistantTurn.id]);
     });
   });
 });
