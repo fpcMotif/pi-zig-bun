@@ -1,6 +1,11 @@
 import type { Tool, ToolExecutionContext, ToolRegistry } from "../tools/types";
 import type { Capability } from "../permissions";
 
+export interface Logger {
+  info(msg: string): void;
+  error(msg: string): void;
+}
+
 export interface SkillContext {
   registerTool: (tool: Tool) => void;
   registerHook: (name: string, callback: () => void | Promise<void>) => void;
@@ -8,6 +13,7 @@ export interface SkillContext {
     require: (capability: Capability, target?: string) => void;
   };
   root: string;
+  logger: Logger;
 }
 
 export interface SkillModule {

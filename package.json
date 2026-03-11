@@ -6,7 +6,7 @@
   "scripts": {
     "prepare": "git config core.hooksPath .githooks",
     "precommit": "./scripts/pre-commit.sh",
-    "validate": "bunx tsc --noEmit",
+    "validate": "bun x tsc --noEmit",
     "test": "bun test",
     "test:zig": "zig test src/zig/main.zig",
     "ci:search-regression": "bun scripts/ci-search-regression.ts",
@@ -19,5 +19,8 @@
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "dependencies": {
+    "@types/node": "^25.4.0"
   }
 }
