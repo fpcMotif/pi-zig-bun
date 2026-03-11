@@ -107,24 +107,38 @@ export const editTool: Tool<{ path: string; from: string; to: string }, ToolResu
   description: "Replace exact text range in a file",
   capabilities: ["fs.read", "fs.write"],
   async execute(ctx, input): Promise<ToolResult> {
-    const resolved = readPath(ctx, input);
-    ctx.capabilities.require("fs.read", resolved);
-    ctx.capabilities.require("fs.write", resolved);
-
-    const payload = readFileSync(resolved, "utf8");
     const { from, to } = input as { from?: string; to?: string };
     if (from === undefined || to === undefined) {
       throw new Error("edit requires `from` and `to` fields");
     }
 
-    if (!payload.includes(from)) {
-      return {
-        ok: false,
-        error: "target text not found",
-      };
+    const resolved = readPath(ctx, input);
+    ctx.capabilities.require("fs.read", resolved);
+    ctx.capabilities.require("fs.write", resolved);
+
+    const { open } = await import("node:fs/promises");
+    let fileHandle;
+    try {
+      fileHandle = await open(resolved, "r+");
+      const payload = await fileHandle.readFile("utf8");
+
+      if (!payload.includes(from)) {
+        return {
+          ok: false,
+          error: "target text not found",
+        };
+      }
+
+      const newPayload = payload.replaceAll(from, to);
+      await fileHandle.truncate(0);
+      const buffer = Buffer.from(newPayload, "utf8");
+      await fileHandle.write(buffer, 0, buffer.length, 0);
+    } finally {
+      if (fileHandle) {
+        await fileHandle.close();
+      }
     }
 
-    writeFileSync(resolved, payload.replaceAll(from, to));
     return {
       ok: true,
       output: `replaced text in ${resolved}`,
