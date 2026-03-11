@@ -70,7 +70,11 @@ describe("readTool", () => {
   });
 
   test("throws when the path argument is missing", async () => {
-    expect(() => readTool.execute(makeCtx(tmpDir), {} as any)).toThrow("path");
+    await expect(readTool.execute(makeCtx(tmpDir), {} as any)).rejects.toThrow("path");
+  });
+
+  test("rejects blank path values", async () => {
+    await expect(readTool.execute(makeCtx(tmpDir), { path: "   " } as any)).rejects.toThrow("path must not be empty");
   });
 
   test("rejects relative path traversal outside cwd", async () => {
@@ -136,6 +140,31 @@ describe("writeTool", () => {
     expect(result.ok).toBe(true);
     const ondisk = await readFile(filePath, "utf8");
     expect(ondisk).toBe("deep");
+  });
+
+  test("does not overwrite an existing file when overwrite is false", async () => {
+    const filePath = path.join(tmpDir, "existing.txt");
+    await writeFile(filePath, "original");
+
+    const result = (await writeTool.execute(makeCtx(tmpDir), {
+      path: filePath,
+      content: "replacement",
+      overwrite: false,
+    })) as ToolResult;
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("file already exists");
+    expect(await readFile(filePath, "utf8")).toBe("original");
+  });
+
+  test("rejects non-boolean overwrite flags", async () => {
+    await expect(
+      writeTool.execute(makeCtx(tmpDir), {
+        path: path.join(tmpDir, "out.txt"),
+        content: "hello",
+        overwrite: "false" as any,
+      }),
+    ).rejects.toThrow("overwrite must be a boolean");
   });
 
   test("rejects writes outside cwd", async () => {
@@ -218,9 +247,18 @@ describe("editTool", () => {
     const filePath = path.join(tmpDir, "dummy.txt");
     await writeFile(filePath, "content");
 
-    expect(() =>
-      editTool.execute(makeCtx(tmpDir), { path: filePath } as any),
-    ).toThrow("edit requires");
+    await expect(editTool.execute(makeCtx(tmpDir), { path: filePath } as any)).rejects.toThrow("from");
+  });
+
+  test("rejects an empty replacement source string", async () => {
+    const filePath = path.join(tmpDir, "empty-from.txt");
+    await writeFile(filePath, "content");
+
+    await expect(
+      editTool.execute(makeCtx(tmpDir), { path: filePath, from: "", to: "x" }),
+    ).rejects.toThrow("from must not be empty");
+
+    expect(await readFile(filePath, "utf8")).toBe("content");
   });
 
   test("rejects edits outside cwd", async () => {
@@ -293,7 +331,20 @@ describe("bashTool", () => {
   });
 
   test("throws when the command field is missing", async () => {
-    expect(() => bashTool.execute(makeCtx(tmpDir), {} as any)).toThrow("bash requires");
+    await expect(bashTool.execute(makeCtx(tmpDir), {} as any)).rejects.toThrow("command");
+  });
+
+  test("rejects blank commands", async () => {
+    await expect(bashTool.execute(makeCtx(tmpDir), { command: "   " } as any)).rejects.toThrow("command must not be empty");
+  });
+
+  test("prevents excessive bash output from exhausting memory", async () => {
+    const result = (await bashTool.execute(makeCtx(tmpDir), {
+      command: "yes | head -n 3000000",
+    })) as ToolResult;
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("bash execution failed");
   });
 
   test("returns structured failure for non-zero exit status", async () => {
@@ -358,7 +409,7 @@ describe("MemoryToolRegistry", () => {
   test("run() throws for an unregistered tool id", async () => {
     const registry = new MemoryToolRegistry();
 
-    expect(
+    await expect(
       registry.run("nonexistent", {}, makeCtx(tmpDir)),
     ).rejects.toThrow("Tool not found: nonexistent");
   });
@@ -374,38 +425,63 @@ describe("MemoryToolRegistry", () => {
     const filePath = path.join(tmpDir, "secret.txt");
     await writeFile(filePath, "classified");
 
-    expect(
+    await expect(
       registry.run("read", { path: filePath }, ctx),
     ).rejects.toThrow("Capability denied");
   });
 
-  test("run() passes the path from input to capability check", async () => {
+  test("run() uses tool-resolved capability targets instead of raw input paths", async () => {
     const registry = new MemoryToolRegistry();
     registry.register(readTool as Tool);
 
-    // Allow reads only under a specific directory
     const allowedDir = path.join(tmpDir, "allowed");
     await mkdir(allowedDir, { recursive: true });
     const allowedFile = path.join(allowedDir, "ok.txt");
     await writeFile(allowedFile, "visible");
 
     const scopedManager = new CapabilityManager({
-      "fs.read": [`${allowedDir}/**`],
+      "fs.read": ["allowed/**"],
     });
 
     const ctx = makeCtx(tmpDir, scopedManager);
 
-    // Allowed path should work
     const result = await registry.run<ToolResult>("read", { path: allowedFile }, ctx);
     expect(result.ok).toBe(true);
     expect(result.output).toBe("visible");
 
-    // Disallowed path should fail
     const forbiddenFile = path.join(tmpDir, "forbidden.txt");
     await writeFile(forbiddenFile, "nope");
 
-    expect(
+    await expect(
       registry.run("read", { path: forbiddenFile }, ctx),
     ).rejects.toThrow("Capability denied");
+  });
+
+  test("run() rejects capability resolvers that return undeclared capabilities", async () => {
+    const registry = new MemoryToolRegistry();
+    registry.register({
+      id: "bad-tool",
+      name: "bad-tool",
+      description: "bad capability resolver",
+      capabilities: ["fs.read"],
+      resolveCapabilityTargets: () => [{ capability: "fs.write", target: "tmp/file.txt" }],
+      execute: () => ({ ok: true }),
+    });
+
+    await expect(registry.run("bad-tool", {}, makeCtx(tmpDir))).rejects.toThrow("undeclared capability");
+  });
+
+  test("run() rejects capability resolvers that omit a declared capability", async () => {
+    const registry = new MemoryToolRegistry();
+    registry.register({
+      id: "missing-capability-tool",
+      name: "missing-capability-tool",
+      description: "missing capability resolver",
+      capabilities: ["fs.read", "fs.write"],
+      resolveCapabilityTargets: () => [{ capability: "fs.read", target: "tmp/file.txt" }],
+      execute: () => ({ ok: true }),
+    });
+
+    await expect(registry.run("missing-capability-tool", {}, makeCtx(tmpDir))).rejects.toThrow("did not resolve required capability");
   });
 });

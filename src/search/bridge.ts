@@ -46,6 +46,22 @@ export class SearchBridge {
   private pending = new Map<RpcId, PendingCall>();
   private started = false;
 
+  private scrub(text: string): string {
+    const paths = [
+      { path: this.binaryPath, replacement: "[BINARY_PATH]" },
+      { path: this.workspaceRoot, replacement: "[WORKSPACE_ROOT]" },
+    ].sort((left, right) => right.path.length - left.path.length);
+
+    let scrubbed = text;
+    for (const { path, replacement } of paths) {
+      if (path) {
+        scrubbed = scrubbed.split(path).join(replacement);
+      }
+    }
+
+    return scrubbed;
+  }
+
   constructor(options: SearchBridgeOptions = {}) {
     this.workspaceRoot = options.workspaceRoot ?? process.cwd();
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
@@ -115,7 +131,7 @@ export class SearchBridge {
           if (!existsSync(piDir)) {
             mkdirSync(piDir, { recursive: true });
           }
-          appendFileSync(stderrLog, chunk);
+          appendFileSync(stderrLog, this.scrub(chunk.toString()));
         } catch {
           // ignore logging errors to prevent breaking the bridge
         }

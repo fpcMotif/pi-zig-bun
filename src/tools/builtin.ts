@@ -1,67 +1,173 @@
-import { mkdirSync, readFileSync, writeFileSync, realpathSync, existsSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { realpathSync, existsSync } from "node:fs";
+import { readFile, stat, mkdir, writeFile, open } from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import type { Tool, ToolExecutionContext } from "./types";
-import type { ToolResult } from "../permissions";
+import type { Capability, ToolResult } from "../permissions";
+import type { Tool, ToolCapabilityRequirement, ToolExecutionContext } from "./types";
 
 /** Hard ceiling on file reads to prevent OOM from enormous files. */
 const MAX_READ_BYTES = 500_000;
 
-/**
- * Resolve and validate a tool-supplied path against the workspace root.
- * Guards against both `..` traversal and symlink escapes.
- */
-function readPath(ctx: ToolExecutionContext, input: unknown): string {
-  const value = (input as { path?: string }).path;
-  if (!value || typeof value !== "string") {
-    throw new Error("Tool input requires a path string");
-  }
-  const workspaceRoot = path.resolve(ctx.cwd);
-  const resolved = path.resolve(workspaceRoot, value);
+type ReadToolInput = { path: string };
+type WriteToolInput = { path: string; content: string; overwrite?: boolean };
+type EditToolInput = { path: string; from: string; to: string };
+type BashToolInput = { command: string };
 
-  // First check: reject obvious `..` traversal before touching the filesystem.
-  const relative = path.relative(workspaceRoot, resolved);
-  if (path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`)) {
-    throw new Error("Path traversal detected");
-  }
-
-  // Second check: resolve symlinked ancestors to catch escapes via symlinked directories.
-  // This checks the nearest existing ancestor, so writes to new files are still blocked
-  // if the target path resolves through an escaped symlink.
-  let ancestor = resolved;
-  while (true) {
-    if (existsSync(ancestor)) {
-      break;
-    }
-    const parent = path.dirname(ancestor);
-    if (parent === ancestor) {
-      break;
-    }
-    ancestor = parent;
-  }
-  if (existsSync(ancestor)) {
-    const realAncestor = realpathSync(ancestor);
-    const realWorkspace = realpathSync(workspaceRoot);
-    const realRelative = path.relative(realWorkspace, realAncestor);
-    if (path.isAbsolute(realRelative) || realRelative === ".." || realRelative.startsWith(`..${path.sep}`)) {
-      throw new Error("Path traversal detected (symlink escape)");
-    }
-  }
-
-  return resolved;
+interface ResolvedPathInput {
+  resolvedPath: string;
+  capabilityTarget: string;
 }
 
-export const readTool: Tool<{ path: string }, ToolResult> = {
+interface ParsedWriteInput extends ResolvedPathInput {
+  content: string;
+  overwrite: boolean;
+}
+
+interface ParsedEditInput extends ResolvedPathInput {
+  from: string;
+  to: string;
+}
+
+interface ParsedBashInput {
+  command: string;
+  capabilityTarget: string;
+}
+
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`${field} must be a string`);
+  }
+  return value;
+}
+
+function requireNonBlankString(value: unknown, field: string): string {
+  const text = requireString(value, field);
+  if (text.trim().length === 0) {
+    throw new Error(`${field} must not be empty`);
+  }
+  return text;
+}
+
+function requireBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`${field} must be a boolean`);
+  }
+  return value;
+}
+
+function toCapabilityTarget(workspaceRoot: string, resolvedPath: string): string {
+  const relativePath = path.relative(workspaceRoot, resolvedPath);
+  return relativePath === "" ? "." : relativePath.split(path.sep).join("/");
+}
+
+function ensurePathInsideWorkspace(workspaceRoot: string, resolvedPath: string): void {
+  const relativePath = path.relative(workspaceRoot, resolvedPath);
+  if (path.isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith(`..${path.sep}`)) {
+    throw new Error("Path traversal detected");
+  }
+}
+
+function findNearestExistingAncestor(targetPath: string): string | undefined {
+  let currentPath = targetPath;
+
+  while (!existsSync(currentPath)) {
+    const parentPath = path.dirname(currentPath);
+    if (parentPath === currentPath) {
+      return undefined;
+    }
+    currentPath = parentPath;
+  }
+
+  return currentPath;
+}
+
+function ensureNoSymlinkEscape(workspaceRoot: string, resolvedPath: string): void {
+  const ancestor = findNearestExistingAncestor(resolvedPath);
+  if (!ancestor) {
+    return;
+  }
+
+  const realWorkspaceRoot = realpathSync(workspaceRoot);
+  const realAncestor = realpathSync(ancestor);
+  const relativePath = path.relative(realWorkspaceRoot, realAncestor);
+
+  if (path.isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith(`..${path.sep}`)) {
+    throw new Error("Path traversal detected (symlink escape)");
+  }
+}
+
+function resolveWorkspacePath(ctx: ToolExecutionContext, inputPath: unknown): ResolvedPathInput {
+  const workspaceRoot = path.resolve(ctx.cwd);
+  const requestedPath = requireNonBlankString(inputPath, "path");
+  const resolvedPath = path.resolve(workspaceRoot, requestedPath);
+
+  ensurePathInsideWorkspace(workspaceRoot, resolvedPath);
+  ensureNoSymlinkEscape(workspaceRoot, resolvedPath);
+
+  return {
+    resolvedPath,
+    capabilityTarget: toCapabilityTarget(workspaceRoot, resolvedPath),
+  };
+}
+
+function toPathCapabilityRequirements(
+  capabilityTarget: string,
+  capabilities: readonly Capability[],
+): ToolCapabilityRequirement[] {
+  return capabilities.map((capability) => ({ capability, target: capabilityTarget }));
+}
+
+function parseReadInput(ctx: ToolExecutionContext, input: ReadToolInput): ResolvedPathInput {
+  return resolveWorkspacePath(ctx, input.path);
+}
+
+function parseWriteInput(ctx: ToolExecutionContext, input: WriteToolInput): ParsedWriteInput {
+  return {
+    ...resolveWorkspacePath(ctx, input.path),
+    content: requireString(input.content, "content"),
+    overwrite: input.overwrite === undefined ? true : requireBoolean(input.overwrite, "overwrite"),
+  };
+}
+
+function parseEditInput(ctx: ToolExecutionContext, input: EditToolInput): ParsedEditInput {
+  const from = requireString(input.from, "from");
+  if (from.length === 0) {
+    throw new Error("from must not be empty");
+  }
+
+  return {
+    ...resolveWorkspacePath(ctx, input.path),
+    from,
+    to: requireString(input.to, "to"),
+  };
+}
+
+function parseBashInput(input: BashToolInput): ParsedBashInput {
+  return {
+    command: requireNonBlankString(input.command, "command"),
+    capabilityTarget: ".",
+  };
+}
+
+const READ_CAPABILITIES: Capability[] = ["fs.read"];
+const WRITE_CAPABILITIES: Capability[] = ["fs.write"];
+const EDIT_CAPABILITIES: Capability[] = ["fs.read", "fs.write"];
+const BASH_CAPABILITIES: Capability[] = ["fs.execute"];
+
+export const readTool: Tool<ReadToolInput, ToolResult> = {
   id: "read",
   name: "read",
   description: "Read a UTF-8 text file from disk with hard read-size guard",
-  capabilities: ["fs.read"],
+  capabilities: [...READ_CAPABILITIES],
+  resolveCapabilityTargets(ctx, input) {
+    const { capabilityTarget } = parseReadInput(ctx, input);
+    return toPathCapabilityRequirements(capabilityTarget, READ_CAPABILITIES);
+  },
   async execute(ctx, input): Promise<ToolResult> {
-    const resolved = readPath(ctx, input);
-    ctx.capabilities.require("fs.read", resolved);
+    const { resolvedPath, capabilityTarget } = parseReadInput(ctx, input);
+    ctx.capabilities.require("fs.read", capabilityTarget);
 
-    const stats = await stat(resolved);
+    const stats = await stat(resolvedPath);
     if (stats.size > MAX_READ_BYTES) {
       return {
         ok: false,
@@ -69,7 +175,7 @@ export const readTool: Tool<{ path: string }, ToolResult> = {
       };
     }
 
-    const data = await readFile(resolved);
+    const data = await readFile(resolvedPath);
     return {
       ok: true,
       output: data.toString("utf8"),
@@ -80,76 +186,106 @@ export const readTool: Tool<{ path: string }, ToolResult> = {
   },
 };
 
-export const writeTool: Tool<{ path: string; content: string; overwrite?: boolean }, ToolResult> = {
+export const writeTool: Tool<WriteToolInput, ToolResult> = {
   id: "write",
   name: "write",
   description: "Create or overwrite a file",
-  capabilities: ["fs.write"],
+  capabilities: [...WRITE_CAPABILITIES],
+  resolveCapabilityTargets(ctx, input) {
+    const { capabilityTarget } = parseWriteInput(ctx, input);
+    return toPathCapabilityRequirements(capabilityTarget, WRITE_CAPABILITIES);
+  },
   async execute(ctx, input): Promise<ToolResult> {
-    const resolved = readPath(ctx, input);
-    ctx.capabilities.require("fs.write", resolved);
+    const { resolvedPath, capabilityTarget, content, overwrite } = parseWriteInput(ctx, input);
+    ctx.capabilities.require("fs.write", capabilityTarget);
 
-    const dir = path.dirname(resolved);
-    mkdirSync(dir, { recursive: true });
+    await mkdir(path.dirname(resolvedPath), { recursive: true });
 
-    writeFileSync(resolved, (input as { content: string }).content ?? "");
+    try {
+      if (overwrite) {
+        await writeFile(resolvedPath, content);
+      } else {
+        await writeFile(resolvedPath, content, { flag: "wx" });
+      }
+    } catch (error) {
+      const fileError = error as NodeJS.ErrnoException;
+      if (!overwrite && fileError.code === "EEXIST") {
+        return {
+          ok: false,
+          error: "file already exists",
+        };
+      }
+      throw error;
+    }
+
     return {
       ok: true,
-      output: `wrote ${resolved}`,
-      data: { path: resolved },
+      output: `wrote ${resolvedPath}`,
+      data: { path: resolvedPath },
     };
   },
 };
 
-export const editTool: Tool<{ path: string; from: string; to: string }, ToolResult> = {
+export const editTool: Tool<EditToolInput, ToolResult> = {
   id: "edit",
   name: "edit",
   description: "Replace exact text range in a file",
-  capabilities: ["fs.read", "fs.write"],
+  capabilities: [...EDIT_CAPABILITIES],
+  resolveCapabilityTargets(ctx, input) {
+    const { capabilityTarget } = parseEditInput(ctx, input);
+    return toPathCapabilityRequirements(capabilityTarget, EDIT_CAPABILITIES);
+  },
   async execute(ctx, input): Promise<ToolResult> {
-    const resolved = readPath(ctx, input);
-    ctx.capabilities.require("fs.read", resolved);
-    ctx.capabilities.require("fs.write", resolved);
+    const { resolvedPath, capabilityTarget, from, to } = parseEditInput(ctx, input);
+    ctx.capabilities.require("fs.read", capabilityTarget);
+    ctx.capabilities.require("fs.write", capabilityTarget);
 
-    const payload = readFileSync(resolved, "utf8");
-    const { from, to } = input as { from?: string; to?: string };
-    if (from === undefined || to === undefined) {
-      throw new Error("edit requires `from` and `to` fields");
+    const fileHandle = await open(resolvedPath, "r+");
+
+    try {
+      const payload = await fileHandle.readFile("utf8");
+      if (!payload.includes(from)) {
+        return {
+          ok: false,
+          error: "target text not found",
+        };
+      }
+
+      const updatedPayload = payload.replaceAll(from, to);
+      await fileHandle.truncate(0);
+      await fileHandle.write(updatedPayload, 0, "utf8");
+    } finally {
+      await fileHandle.close();
     }
 
-    if (!payload.includes(from)) {
-      return {
-        ok: false,
-        error: "target text not found",
-      };
-    }
-
-    writeFileSync(resolved, payload.replaceAll(from, to));
     return {
       ok: true,
-      output: `replaced text in ${resolved}`,
-      data: { path: resolved },
+      output: `replaced text in ${resolvedPath}`,
+      data: { path: resolvedPath },
     };
   },
 };
 
-export const bashTool: Tool<{ command: string }, ToolResult> = {
+export const bashTool: Tool<BashToolInput, ToolResult> = {
   id: "bash",
   name: "bash",
   description: "Execute a shell command in project root context",
-  capabilities: ["fs.execute"],
+  capabilities: [...BASH_CAPABILITIES],
+  resolveCapabilityTargets(_ctx, input) {
+    const { capabilityTarget } = parseBashInput(input);
+    return toPathCapabilityRequirements(capabilityTarget, BASH_CAPABILITIES);
+  },
   async execute(ctx, input): Promise<ToolResult> {
-    const command = (input as { command?: string }).command;
-    if (!command) {
-      throw new Error("bash requires { command }");
-    }
+    const { command, capabilityTarget } = parseBashInput(input);
 
-    ctx.capabilities.require("fs.execute", ctx.cwd);
+    ctx.capabilities.require("fs.execute", capabilityTarget);
     const result = spawnSync("bash", ["-c", command], {
       cwd: ctx.cwd,
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
+      timeout: 120_000,
+      maxBuffer: 1024 * 1024 * 5,
     });
 
     if (result.error) {

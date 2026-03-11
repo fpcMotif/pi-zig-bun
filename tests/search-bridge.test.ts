@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { SearchBridge } from "../src/search/bridge";
 
-async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash" | "stderr" | "malformed" | "rpc_error"): Promise<{ root: string; binaryPath: string }> {
+async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash" | "stderr" | "stderr_sensitive" | "malformed" | "rpc_error"): Promise<{ root: string; binaryPath: string }> {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-bridge-"));
   const binaryPath = path.join(root, "fake-bridge.mjs");
   const script = `#!/usr/bin/env node
@@ -18,6 +18,9 @@ rl.on("line", (line) => {
   }
   if (mode === "stderr") {
     process.stderr.write("some error output\\n");
+  }
+  if (mode === "stderr_sensitive") {
+    process.stderr.write("Error occurred at binary ${binaryPath} in workspace ${root}\\n");
   }
   if (mode === "timeout") {
     return;
@@ -118,6 +121,25 @@ describe("SearchBridge protocol behavior", () => {
       const { readFile } = await import("node:fs/promises");
       const logContent = await readFile(path.join(fixture.root, ".pi", "search-bridge.stderr.log"), "utf8");
       expect(logContent).toContain("some error output");
+    } finally {
+      await bridge.stop();
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("scrubs sensitive paths from stderr log output", async () => {
+    const fixture = await createFakeBridgeBinary("stderr_sensitive");
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    try {
+      await bridge.call("search.files", { query: "abc" });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      const { readFile } = await import("node:fs/promises");
+      const logContent = await readFile(path.join(fixture.root, ".pi", "search-bridge.stderr.log"), "utf8");
+
+      expect(logContent).toContain("Error occurred at binary [BINARY_PATH] in workspace [WORKSPACE_ROOT]");
+      expect(logContent).not.toContain(fixture.root);
+      expect(logContent).not.toContain(fixture.binaryPath);
     } finally {
       await bridge.stop();
       await rm(fixture.root, { recursive: true, force: true });
