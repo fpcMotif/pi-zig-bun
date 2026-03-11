@@ -202,7 +202,7 @@ const SearchState = struct {
             try writer.writeInt(u64, entry.size, .little);
             try writer.writeInt(u32, entry.frecency, .little);
         }
-        try writer.flush();
+
     }
 
     fn refreshIncremental(self: *SearchState, root: []const u8) !void {
@@ -1038,7 +1038,7 @@ fn loweredSlice(allocator: Allocator, input: []const u8) ![]const u8 {
 
 fn writeResult(writer: anytype, id: i64, payload: anytype) !void {
     try writer.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{f}}}\n", .{ id, std.json.fmt(payload, .{}) });
-    try writer.flush();
+
 }
 
 fn writeError(writer: anytype, id: i64, code: i32, message: []const u8) !void {
@@ -1048,7 +1048,7 @@ fn writeError(writer: anytype, id: i64, code: i32, message: []const u8) !void {
     }{ .code = code, .message = message };
 
     try writer.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"error\":{f}}}\n", .{ id, std.json.fmt(payload, .{}) });
-    try writer.flush();
+
 }
 
 fn handleRequest(
@@ -1227,7 +1227,7 @@ pub fn main() !void {
 
     var write_buffer: [4096]u8 = undefined;
     var out = stdout.writer(&write_buffer);
-    const out_writer = &out.interface;
+    const out_writer = out;
 
     while (true) {
         const bytes_read = try stdin.read(read_buffer[0..]);
@@ -1264,7 +1264,7 @@ pub fn main() !void {
         }
     }
 
-    try out_writer.flush();
+
 }
 
 test "fuzzy ranking prefers exact file name match" {
