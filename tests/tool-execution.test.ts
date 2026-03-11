@@ -316,6 +316,16 @@ describe("bashTool", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("bash execution failed");
   });
+
+  test("prevents hanging commands with a timeout", async () => {
+    const result = (await bashTool.execute(makeCtx(tmpDir), {
+      command: "yes | head -n 3000000",
+    })) as ToolResult;
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("bash execution failed");
+    expect(result.error).toContain("maxBuffer");
+  });
 });
 
 // ---------------------------------------------------------------------------

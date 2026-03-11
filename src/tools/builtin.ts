@@ -150,6 +150,8 @@ export const bashTool: Tool<{ command: string }, ToolResult> = {
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
+      timeout: 120_000, // 2 minutes max execution time to prevent hanging
+      maxBuffer: 1024 * 1024 * 5, // 5MB limit to prevent OOM
     });
 
     if (result.error) {
