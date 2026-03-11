@@ -23,10 +23,10 @@ export interface ToolRegistry {
 }
 
 export class MemoryToolRegistry implements ToolRegistry {
-  private tools = new Map<string, Tool<any, any>>();
+  private tools = new Map<string, Tool<unknown, unknown>>();
 
   public register(tool: Tool): void {
-    this.tools.set(tool.id, tool as Tool<any, any>);
+    this.tools.set(tool.id, tool as Tool<unknown, unknown>);
   }
 
   public async run<T>(id: string, input: unknown, ctx: ToolExecutionContext): Promise<T> {
