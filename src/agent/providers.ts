@@ -239,8 +239,9 @@ export class GoogleGenAIAdapter extends BaseSseAgent {
     };
   }
 
-  protected parseChunk(payload: any) {
-    const text = payload?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("") ?? "";
-    return { token: text || undefined, done: Boolean(payload?.candidates?.[0]?.finishReason) };
+  protected parseChunk(payload: unknown) {
+    const p = payload as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> }, finishReason?: unknown }> };
+    const text = p?.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
+    return { token: text || undefined, done: Boolean(p?.candidates?.[0]?.finishReason) };
   }
 }
