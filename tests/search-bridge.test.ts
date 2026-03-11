@@ -196,4 +196,41 @@ describe("SearchBridge protocol behavior", () => {
       await rm(fixture.root, { recursive: true, force: true });
     }
   });
+
+  test("scrubs sensitive paths from stderr log, longest first", async () => {
+    const fixture = await createFakeBridgeBinary("stderr");
+    // Make binaryPath longer than workspaceRoot by appending to it
+    const binaryPath = path.join(fixture.root, "nested", "binary", "fake-bridge.mjs");
+    const workspaceRoot = fixture.root;
+
+    // We'll mock the fake bridge binary to emit these paths
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot, requestTimeoutMs: 200 });
+
+    // We overwrite the binary path to simulate the paths
+    // @ts-ignore
+    const b = bridge as any;
+    b.binaryPath = binaryPath;
+    b.workspaceRoot = workspaceRoot;
+
+    // Call the scrub method directly to unit-test its logic
+    const input = "Error: Failed to spawn " + binaryPath + " in " + workspaceRoot + " because " + workspaceRoot;
+    const output = bridge.scrub(input);
+
+    expect(output).not.toContain(binaryPath);
+    expect(output).not.toContain(workspaceRoot);
+    expect(output).toBe("Error: Failed to spawn [BINARY_PATH] in [WORKSPACE_ROOT] because [WORKSPACE_ROOT]");
+
+    // Test the other way around: workspaceRoot is longer
+    b.workspaceRoot = path.join(fixture.root, "very", "long", "workspace", "path");
+    b.binaryPath = path.join(fixture.root, "bin");
+
+    const input2 = "Found " + b.binaryPath + " inside " + b.workspaceRoot;
+    const output2 = bridge.scrub(input2);
+
+    expect(output2).toBe("Found [BINARY_PATH] inside [WORKSPACE_ROOT]");
+
+    await bridge.stop();
+    await rm(fixture.root, { recursive: true, force: true });
+  });
+
 });

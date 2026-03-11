@@ -115,7 +115,7 @@ export class SearchBridge {
           if (!existsSync(piDir)) {
             mkdirSync(piDir, { recursive: true });
           }
-          appendFileSync(stderrLog, chunk);
+          appendFileSync(stderrLog, this.scrub(chunk.toString()));
         } catch {
           // ignore logging errors to prevent breaking the bridge
         }
@@ -228,6 +228,22 @@ export class SearchBridge {
   public async uiInput(params: UiInputParams): Promise<UiAck> {
     return this.call<UiAck>("ui.input", params);
   }
+
+  public scrub(text: string): string {
+    const paths = [
+      { path: this.binaryPath, replacement: "[BINARY_PATH]" },
+      { path: this.workspaceRoot, replacement: "[WORKSPACE_ROOT]" }
+    ].filter(p => typeof p.path === 'string' && p.path.length > 0);
+
+    paths.sort((a, b) => b.path.length - a.path.length);
+
+    let result = text;
+    for (const { path, replacement } of paths) {
+      result = result.split(path).join(replacement);
+    }
+    return result;
+  }
+
   public async call<T>(method: string, params: unknown = undefined): Promise<T> {
     if (!this.started) {
       await this.start();
