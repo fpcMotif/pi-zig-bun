@@ -101,6 +101,32 @@ describe("loadSkills", () => {
     expect(registry.list()).toHaveLength(0);
   });
 
+
+  test("skipping invalid capabilities in register", async () => {
+    const root = await tempDir("pi-skill-invalid-cap-");
+    try {
+      await writeFile(path.join(root, "invalid-cap.ts"), `
+        export default {
+          name: "invalid-cap",
+          register(ctx) {
+            // Simulate missing/invalid capability check throwing an error
+            throw new Error("Invalid capability requested: fs.write");
+          }
+        }
+      `, "utf8");
+
+      const registry = new MemoryToolRegistry();
+      const result = await loadSkills(registry, [root]);
+
+      expect(result.loaded).toBe(0);
+      expect(result.failed).toBe(1);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0]).toContain("Invalid capability requested: fs.write");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("provides registerHook and capabilities.require in context", async () => {
     const root = await tempDir("pi-skill-");
     try {
