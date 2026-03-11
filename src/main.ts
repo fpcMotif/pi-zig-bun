@@ -20,6 +20,57 @@ interface AppRuntime {
   capabilities: CapabilityManager;
 }
 
+function requireSessionAccess(runtime: AppRuntime, sessionId: string): void {
+  runtime.capabilities.require("session.access", sessionId);
+}
+
+function printSessionHeads(heads: Awaited<ReturnType<SessionTree["tree"]>>, json: boolean): void {
+  if (json) {
+    console.log(JSON.stringify(heads, null, 2));
+    return;
+  }
+
+  console.log(`Session heads: ${heads.length}`);
+  for (const head of heads) {
+    console.log(`${head.id} | parent=${head.parentId ?? "<root>"} | ${head.createdAt}`);
+  }
+}
+
+async function runTreeCommand(runtime: AppRuntime, json: boolean): Promise<number> {
+  const heads = await runtime.sessionTree.tree();
+  printSessionHeads(heads, json);
+  return 0;
+}
+
+async function runSessionCommand(runtime: AppRuntime, sessionId: string | undefined, json: boolean): Promise<number> {
+  if (!sessionId) {
+    console.log("Session subcommand usage: session --root-session <id>");
+    return 1;
+  }
+
+  requireSessionAccess(runtime, sessionId);
+  const turn = await runtime.sessionTree.getTurn(sessionId);
+  if (!turn) {
+    const message = `Session not found: ${sessionId}`;
+    if (json) {
+      console.log(JSON.stringify({ ok: false, error: message, sessionId }, null, 2));
+    } else {
+      console.log(message);
+    }
+    return 1;
+  }
+
+  const history = await runtime.sessionTree.history(sessionId);
+  console.log(JSON.stringify(history, null, 2));
+  return 0;
+}
+
+function runLoginCommand(json: boolean): number {
+  const msg = { ok: false, command: "/login", code: "NOT_SUPPORTED", message: "Login/auth setup is not implemented yet in pi-zig-bun." };
+  console.log(json ? JSON.stringify(msg) : msg.message);
+  return 0;
+}
+
 function registerBuiltinTools(registry: MemoryToolRegistry): void {
   for (const tool of builtinTools) {
     registry.register(tool as Tool);
@@ -254,15 +305,7 @@ async function runInteractive(
     }
 
     if (trimmed === "/tree") {
-      const heads = await runtime.sessionTree.tree();
-      if (json) {
-        console.log(JSON.stringify(heads, null, 2));
-      } else {
-        console.log(`Session heads: ${heads.length}`);
-        for (const head of heads) {
-          console.log(`${head.id} | ${head.createdAt} | ${head.role}`);
-        }
-      }
+      await runTreeCommand(runtime, json);
       iface.prompt();
       continue;
     }
@@ -271,6 +314,12 @@ async function runInteractive(
       const query = trimmed.slice("/search ".length).trim();
       await runSearchCommand(runtime, query, 100, false);
       currentTurn = (await runtime.sessionTree.fork(currentTurn, "user", `/search ${query}`)).id;
+      iface.prompt();
+      continue;
+    }
+
+    if (trimmed === "/login") {
+      console.log("Login/auth setup is not implemented yet in pi-zig-bun.");
       iface.prompt();
       continue;
     }
@@ -429,25 +478,12 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
         return 0;
       }
       case "tree": {
-        const heads = await runtime.sessionTree.tree();
-        if (args.json) {
-          console.log(JSON.stringify(heads, null, 2));
-        } else {
-          console.log(`Session heads: ${heads.length}`);
-          for (const head of heads) {
-            console.log(`${head.id} | parent=${head.parentId ?? "<root>"} | ${head.createdAt}`);
-          }
-        }
-        return 0;
+        return await runTreeCommand(runtime, args.json);
       }
       case "session":
-        if (!args.rootSession) {
-          console.log("Session subcommand usage: session --root-session <id>");
-          return 1;
-        }
-        const rootTurn = await runtime.sessionTree.history(args.rootSession);
-        console.log(JSON.stringify(rootTurn, null, 2));
-        return 0;
+        return await runSessionCommand(runtime, args.rootSession, args.json);
+      case "login":
+        return runLoginCommand(args.json);
       case "interactive":
       default: {
         await runInteractive(runtime, registry, capabilities, args.json);

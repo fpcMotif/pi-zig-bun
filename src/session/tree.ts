@@ -17,11 +17,6 @@ export interface SessionTreeStats {
   turns: number;
 }
 
-interface SessionTreeData {
-  rootId: string;
-  turns: SessionTurn[];
-}
-
 const SESSION_FILE = "sessions.jsonl";
 
 export class SessionStore {
@@ -79,7 +74,9 @@ export class SessionStore {
   public async addTurn(turn: SessionTurn): Promise<void> {
     await this.ensureStore();
     await appendFile(this.filePath, `${JSON.stringify(turn)}\n`, "utf8");
-    this.cachedTurns = null;
+    if (this.cachedTurns) {
+      this.cachedTurns.push(turn);
+    }
     this.lastFileStats = null;
   }
 
@@ -142,8 +139,9 @@ export class SessionStore {
   public async getHeads(): Promise<SessionTurn[]> {
     const turns = await this.allTurns();
     const parents = new Set<string>(turns.map((turn) => turn.parentId).filter((id): id is string => Boolean(id)));
-
-    return turns.filter((turn) => !parents.has(turn.id));
+    return turns
+      .filter((turn) => !parents.has(turn.id))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
   }
 
   public async stats(): Promise<SessionTreeStats> {
@@ -177,5 +175,9 @@ export class SessionTree {
 
   public async history(leafId: string): Promise<SessionTurn[]> {
     return this.store.getBranch(leafId);
+  }
+
+  public async getTurn(id: string): Promise<SessionTurn | undefined> {
+    return this.store.getTurn(id);
   }
 }

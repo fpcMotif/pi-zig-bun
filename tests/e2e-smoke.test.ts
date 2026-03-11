@@ -92,4 +92,35 @@ describe("e2e smoke: search + grep + tree", () => {
       await ctx.cleanup();
     }
   });
+
+  test("run() returns stable session and login responses", async () => {
+    const ctx = await makeWorkspace();
+    const logSpy = mock(() => {});
+    const errSpy = mock(() => {});
+
+    const originalLog = console.log;
+    const originalErr = console.error;
+    console.log = logSpy as typeof console.log;
+    console.error = errSpy as typeof console.error;
+
+    try {
+      const sessionUsageCode = await runOrThrow(["--cwd", ctx.root, "session"], ctx.root);
+      const sessionMissingCode = await runOrThrow(["--cwd", ctx.root, "session", "--root-session", "missing"], ctx.root);
+      const loginCode = await runOrThrow(["--cwd", ctx.root, "--json", "/login"], ctx.root);
+
+      expect(sessionUsageCode).toBe(1);
+      expect(sessionMissingCode).toBe(1);
+      expect(loginCode).toBe(0);
+
+      const output = logSpy.mock.calls.flat().join("\n");
+      expect(output).toContain("Session subcommand usage: session --root-session <id>");
+      expect(output).toContain("Session not found: missing");
+      expect(output).toContain('"code":"NOT_SUPPORTED"');
+      expect(errSpy.mock.calls.length).toBe(0);
+    } finally {
+      console.log = originalLog;
+      console.error = originalErr;
+      await ctx.cleanup();
+    }
+  });
 });
