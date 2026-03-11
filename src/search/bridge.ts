@@ -115,7 +115,8 @@ export class SearchBridge {
           if (!existsSync(piDir)) {
             mkdirSync(piDir, { recursive: true });
           }
-          appendFileSync(stderrLog, chunk);
+          const scrubbed = this.scrub(chunk.toString());
+          appendFileSync(stderrLog, scrubbed);
         } catch {
           // ignore logging errors to prevent breaking the bridge
         }
@@ -157,6 +158,19 @@ export class SearchBridge {
       this.pending.clear();
       this.started = false;
     });
+  }
+
+  public scrub(text: string): string {
+    const paths = [
+      { value: this.binaryPath, replacement: "[BINARY_PATH]" },
+      { value: this.workspaceRoot, replacement: "[WORKSPACE_ROOT]" },
+    ].sort((a, b) => b.value.length - a.value.length);
+
+    let result = text;
+    for (const { value, replacement } of paths) {
+      result = result.split(value).join(replacement);
+    }
+    return result;
   }
 
   public async stop(): Promise<void> {
