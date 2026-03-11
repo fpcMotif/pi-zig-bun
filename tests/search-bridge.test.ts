@@ -196,4 +196,21 @@ describe("SearchBridge protocol behavior", () => {
       await rm(fixture.root, { recursive: true, force: true });
     }
   });
+  test("rejects pending calls immediately when process exits unexpectedly", async () => {
+    const fixture = await createFakeBridgeBinary("ok");
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    try {
+      const callPromise = bridge.call("search.files", { query: "abc" });
+
+      // Wait a tick so the process is spawned, then manually emit a close event
+      await new Promise(resolve => setTimeout(resolve, 10));
+      // @ts-ignore - access private field for testing
+      bridge.proc.emit("close", 7, null);
+
+      await expect(callPromise).rejects.toThrow("Search bridge exited with code 7");
+    } finally {
+      await bridge.stop();
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
 });
