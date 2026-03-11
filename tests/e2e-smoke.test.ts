@@ -1,7 +1,8 @@
-import { describe, expect, test, mock } from "bun:test";
+import { describe, expect, test, mock, spyOn } from "bun:test";
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { usage } from "../src/cli";
 import { run } from "../src/main";
 
 async function makeWorkspace() {
@@ -90,6 +91,23 @@ describe("e2e smoke: search + grep + tree", () => {
       console.log = originalLog;
       console.error = originalErr;
       await ctx.cleanup();
+    }
+  });
+});
+
+describe("e2e smoke: help", () => {
+  test("run(['--help']) prints usage and returns 0", async () => {
+    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const code = await run(["--help"]);
+      expect(code).toBe(0);
+      expect(logSpy).toHaveBeenCalled();
+
+      const output = logSpy.mock.calls.flat().join("\n");
+      expect(output).toContain(usage());
+    } finally {
+      logSpy.mockRestore();
     }
   });
 });
