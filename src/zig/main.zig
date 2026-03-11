@@ -1290,6 +1290,7 @@ test "fuzzy ranking prefers exact file name match" {
         .file_name_lower = "alpah.ts",
         .modified_ms = 0,
         .size = 10,
+        .frecency = 0,
     };
 
     const exact_score = try scorePathMatch(query, exact, 2, allocator);
@@ -1336,7 +1337,7 @@ test "json-rpc contract handles ping and unknown methods" {
     var writer = stream.writer();
     // const iface = &writer.interface;
 
-    try handleRequest(allocator, &state, iface, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}");
+    try handleRequest(allocator, &state, &writer, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}");
     try handleRequest(allocator, &state, iface, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"missing\"}");
 
     const output = stream.getWritten();
