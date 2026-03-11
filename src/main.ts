@@ -383,7 +383,7 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
   const search = SearchClient.from({ workspaceRoot: args.cwd });
   await search.ensureInitialized(args.cwd);
   const policyPath = path.join(args.cwd, ".pi", "policy.json");
-  const policy = loadPolicyFile(policyPath);
+  const policy = await loadPolicyFile(policyPath);
   const hasExplicitPolicy = Object.keys(policy).length > 0;
   const capabilities = new CapabilityManager(
     hasExplicitPolicy
