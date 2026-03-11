@@ -1054,7 +1054,7 @@ fn writeError(writer: *std.Io.Writer, id: i64, code: i32, message: []const u8) !
 fn handleRequest(
     allocator: Allocator,
     state: *SearchState,
-    writer: *std.Io.Writer,
+    writer: anytype,
     line: []const u8,
 ) !void {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
