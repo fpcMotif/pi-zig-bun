@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync, realpathSync, existsSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { realpathSync, existsSync } from "node:fs";
+import { readFile, stat, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import type { Tool, ToolExecutionContext } from "./types";
@@ -90,9 +90,9 @@ export const writeTool: Tool<{ path: string; content: string; overwrite?: boolea
     ctx.capabilities.require("fs.write", resolved);
 
     const dir = path.dirname(resolved);
-    mkdirSync(dir, { recursive: true });
+    await mkdir(dir, { recursive: true });
 
-    writeFileSync(resolved, (input as { content: string }).content ?? "");
+    await writeFile(resolved, (input as { content: string }).content ?? "");
     return {
       ok: true,
       output: `wrote ${resolved}`,
@@ -111,7 +111,7 @@ export const editTool: Tool<{ path: string; from: string; to: string }, ToolResu
     ctx.capabilities.require("fs.read", resolved);
     ctx.capabilities.require("fs.write", resolved);
 
-    const payload = readFileSync(resolved, "utf8");
+    const payload = await readFile(resolved, "utf8");
     const { from, to } = input as { from?: string; to?: string };
     if (from === undefined || to === undefined) {
       throw new Error("edit requires `from` and `to` fields");
@@ -124,7 +124,7 @@ export const editTool: Tool<{ path: string; from: string; to: string }, ToolResu
       };
     }
 
-    writeFileSync(resolved, payload.replaceAll(from, to));
+    await writeFile(resolved, payload.replaceAll(from, to));
     return {
       ok: true,
       output: `replaced text in ${resolved}`,
