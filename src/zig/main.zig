@@ -189,7 +189,7 @@ const SearchState = struct {
         defer file.close();
         var buf: [4096]u8 = undefined;
         var wr = file.writer(&buf);
-        const writer = &wr.interface;
+        const writer = &wr;
 
         try writer.writeInt(u32, index_magic, .little);
         try writer.writeInt(u32, index_version, .little);
@@ -1227,7 +1227,7 @@ pub fn main() !void {
 
     var write_buffer: [4096]u8 = undefined;
     var out = stdout.writer(&write_buffer);
-    const out_writer = &out.interface;
+    const out_writer = &out;
 
     while (true) {
         const bytes_read = try stdin.read(read_buffer[0..]);
@@ -1279,7 +1279,7 @@ test "fuzzy ranking prefers exact file name match" {
         .file_name = "alpha.ts",
         .file_name_lower = "alpha.ts",
         .modified_ms = 0,
-        .size = 10,
+        .size = 10, .frecency = 0,
     };
     const fuzzy = SearchEntry{
         .abs_path = "alpah.ts",
@@ -1288,7 +1288,7 @@ test "fuzzy ranking prefers exact file name match" {
         .file_name = "alpah.ts",
         .file_name_lower = "alpah.ts",
         .modified_ms = 0,
-        .size = 10,
+        .size = 10, .frecency = 0,
     };
 
     const exact_score = try scorePathMatch(query, exact, 2, allocator);
@@ -1333,7 +1333,7 @@ test "json-rpc contract handles ping and unknown methods" {
     var out_buf: [4096]u8 = undefined;
     var stream = std.io.fixedBufferStream(&out_buf);
     var writer = stream.writer();
-    const iface = &writer.interface;
+    const iface = &writer;
 
     try handleRequest(allocator, &state, iface, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}");
     try handleRequest(allocator, &state, iface, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"missing\"}");
