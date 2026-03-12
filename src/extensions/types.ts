@@ -1,7 +1,15 @@
 import type { Tool, ToolExecutionContext, ToolRegistry } from "../tools/types";
 import type { Capability } from "../permissions";
 
+
+export interface Logger {
+  error(message: string | Error | unknown): void;
+  info?(message: string): void;
+  warn?(message: string): void;
+}
+
 export interface SkillContext {
+  logger: Logger;
   registerTool: (tool: Tool) => void;
   registerHook: (name: string, callback: () => void | Promise<void>) => void;
   capabilities: {

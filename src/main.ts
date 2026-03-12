@@ -448,10 +448,11 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
 
   const registry = new MemoryToolRegistry();
   registerBuiltinTools(registry);
-  await loadSkills(registry, [
-    path.join(args.cwd, "skills"),
-    path.join(process.cwd(), ".pi", "skills"),
-  ]);
+  await loadSkills(
+    registry,
+    [path.join(args.cwd, "skills"), path.join(process.cwd(), ".pi", "skills")],
+    console
+  );
 
   const runtime: AppRuntime = {
     search,

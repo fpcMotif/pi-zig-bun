@@ -2,12 +2,13 @@ import { readdir } from "node:fs/promises";
 import { watch, type FSWatcher } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import type { ExtensionLoaderResult, SkillContext, SkillModule } from "./types";
+import type { ExtensionLoaderResult, SkillContext, SkillModule, Logger } from "./types";
 import type { ToolRegistry, Tool } from "../tools/types";
 
 export async function loadSkills(
   registry: ToolRegistry,
   searchRoots: string[],
+  logger: Logger = console,
 ): Promise<ExtensionLoaderResult> {
   const result: ExtensionLoaderResult = {
     loaded: 0,
@@ -50,6 +51,7 @@ export async function loadSkills(
           }
 
           const ctx: SkillContext = {
+            logger,
             registerTool,
             registerHook,
             capabilities: {
@@ -85,6 +87,7 @@ async function reloadSkillModule(
   fullPath: string,
   root: string,
   registry: ToolRegistry,
+  logger: Logger,
 ): Promise<void> {
   const bustUrl = `${pathToFileURL(fullPath).href}?t=${Date.now()}`;
   const imported = await import(bustUrl);
@@ -96,6 +99,7 @@ async function reloadSkillModule(
   }
 
   const ctx: SkillContext = {
+    logger,
     registerTool: (tool: Tool) => registry.register(tool),
     registerHook: (_name: string, _cb: () => void | Promise<void>) => {
       // Reserved for future UI/event hooks.
@@ -122,6 +126,7 @@ async function reloadSkillModule(
 export function watchSkills(
   registry: ToolRegistry,
   searchRoots: string[],
+  logger: Logger = console,
 ): { stop: () => void } {
   const watchers: FSWatcher[] = [];
   /** Per-file debounce timers keyed by absolute path. */
@@ -151,9 +156,9 @@ export function watchSkills(
             debounceTimers.delete(fullPath);
             if (stopped) return;
 
-            reloadSkillModule(fullPath, root, registry).catch((err: unknown) => {
+            reloadSkillModule(fullPath, root, registry, logger).catch((err: unknown) => {
               // Log but never crash the host process.
-              console.error(
+              logger.error(
                 `[watchSkills] failed to reload ${fullPath}: ${(err as Error).message}`,
               );
             });

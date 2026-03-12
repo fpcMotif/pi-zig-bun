@@ -256,28 +256,27 @@ describe("watchSkills", () => {
       // Ensure watcher has time to initialize
       await wait(500);
 
-      // Override console.error temporarily to suppress output and verify it's called
-      const originalConsoleError = console.error;
       let errorCalled = false;
-      console.error = () => { errorCalled = true; };
+      const mockLogger = { error: () => { errorCalled = true; }, info: () => {}, warn: () => {} };
 
-      try {
-        // Create a new file so watch event reliably fires on Linux/tmpfs
-        const badPath = path.join(root, "error2.ts");
-        await writeFile(badPath, `
-          throw new Error("Boom");
-        `, "utf8");
+      // Re-create the watcher using the mockLogger
+      watcher.stop();
+      watcher = watchSkills(registry, [root], mockLogger);
+      await wait(500);
 
-        // Wait up to 3 seconds for the watcher to trigger and debounce and re-register
-        for (let i = 0; i < 30; i++) {
-          await wait(100);
-          if (errorCalled) break;
-        }
+      // Create a new file so watch event reliably fires on Linux/tmpfs
+      const badPath = path.join(root, "error2.ts");
+      await writeFile(badPath, `
+        throw new Error("Boom");
+      `, "utf8");
 
-        expect(errorCalled).toBe(true);
-      } finally {
-        console.error = originalConsoleError;
+      // Wait up to 3 seconds for the watcher to trigger and debounce and re-register
+      for (let i = 0; i < 30; i++) {
+        await wait(100);
+        if (errorCalled) break;
       }
+
+      expect(errorCalled).toBe(true);
 
     } finally {
       if (watcher) watcher.stop();
