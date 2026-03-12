@@ -1036,12 +1036,12 @@ fn loweredSlice(allocator: Allocator, input: []const u8) ![]const u8 {
     return out;
 }
 
-fn writeResult(writer: *std.Io.Writer, id: i64, payload: anytype) !void {
+fn writeResult(writer: anytype, id: i64, payload: anytype) !void {
     try writer.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{f}}}\n", .{ id, std.json.fmt(payload, .{}) });
     try writer.flush();
 }
 
-fn writeError(writer: *std.Io.Writer, id: i64, code: i32, message: []const u8) !void {
+fn writeError(writer: anytype, id: i64, code: i32, message: []const u8) !void {
     const payload = struct {
         code: i32,
         message: []const u8,
@@ -1054,7 +1054,7 @@ fn writeError(writer: *std.Io.Writer, id: i64, code: i32, message: []const u8) !
 fn handleRequest(
     allocator: Allocator,
     state: *SearchState,
-    writer: *std.Io.Writer,
+    writer: anytype,
     line: []const u8,
 ) !void {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
@@ -1237,7 +1237,7 @@ pub fn main() !void {
                     _ = line_buffer.pop();
                 }
                 if (line_buffer.items.len > 0) {
-                    try handleRequest(allocator, &state, out_writer, line_buffer.items);
+                    try handleRequest(allocator, &state, &out_writer, line_buffer.items);
                 }
             }
             break;
@@ -1254,7 +1254,7 @@ pub fn main() !void {
                 }
 
                 if (line_buffer.items.len > 0) {
-                    try handleRequest(allocator, &state, out_writer, line_buffer.items);
+                    try handleRequest(allocator, &state, &out_writer, line_buffer.items);
                 }
                 line_buffer.clearRetainingCapacity();
                 continue;
@@ -1335,7 +1335,7 @@ test "json-rpc contract handles ping and unknown methods" {
     var out_buf: [4096]u8 = undefined;
     var stream = std.io.fixedBufferStream(&out_buf);
     var writer = stream.writer();
-    const iface = writer;
+    const iface = &writer;
 
     try handleRequest(allocator, &state, iface, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}");
     try handleRequest(allocator, &state, iface, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"missing\"}");
