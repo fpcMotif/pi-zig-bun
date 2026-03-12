@@ -47,6 +47,22 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
 
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i]!;
+
+    // If we found a command that takes a raw query string, slurp everything else.
+    if (!token.startsWith("-") && positional.length === 0 && normalizeCommand(token) !== undefined) {
+      command = normalizeCommand(token);
+      positional.push(token);
+
+      // If the command is search or grep, the rest of the line is the query.
+      if (command === "search" || command === "grep") {
+        for (let j = i + 1; j < argv.length; j++) {
+          positional.push(argv[j]!);
+        }
+        break;
+      }
+      continue;
+    }
+
     if (!token.startsWith("-")) {
       positional.push(token);
       continue;
