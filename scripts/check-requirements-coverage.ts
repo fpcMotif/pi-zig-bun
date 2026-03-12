@@ -2,40 +2,146 @@ import { readFileSync } from "node:fs";
 
 interface Row {
   reqId: string;
-  source: string;
   priority: string;
-  requirement: string;
-  status: string;
-  tests: string;
   criteria: string;
+  tests: string;
+  status: string;
 }
 
-function parseMatrix(content: string): Row[] {
-  const rows: Row[] = [];
-  for (const line of content.split("\n")) {
-    if (!line.startsWith("| ") || line.includes("Req ID") || line.includes("---")) {
+const VALID_PRIORITIES = new Set(["Must-have", "Should-have"]);
+const VALID_STATUSES = new Set([
+  "Not started",
+  "In progress",
+  "Done",
+  "Verified",
+  "done",
+  "partial",
+  "missing",
+]);
+
+function splitRow(line: string): string[] {
+  return line.split("|").slice(1, -1).map((cell) => cell.trim());
+}
+
+function normalizeHeader(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[`*_]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function isSeparatorRow(line: string): boolean {
+  if (!line.trim().startsWith("|")) {
+    return false;
+  }
+
+  const cells = splitRow(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s+/g, "")));
+}
+
+function resolveColumnIndex(
+  headers: string[],
+  label: string,
+  matcher: (normalizedHeader: string) => boolean,
+): number {
+  const matches = headers
+    .map((header, index) => ({ index, normalized: normalizeHeader(header) }))
+    .filter(({ normalized }) => matcher(normalized));
+
+  if (matches.length !== 1) {
+    throw new Error(`Requirement matrix is missing a unique ${label} column. Headers: ${headers.join(" | ")}`);
+  }
+
+  return matches[0]!.index;
+}
+
+function extractRequirementTable(content: string): { headers: string[]; rows: string[][] } {
+  const lines = content.split("\n");
+
+  for (let i = 0; i < lines.length - 1; i += 1) {
+    const headerLine = lines[i]!;
+    const separatorLine = lines[i + 1]!;
+
+    if (!headerLine.trim().startsWith("|") || !isSeparatorRow(separatorLine)) {
       continue;
     }
 
-    const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
-    if (cells.length < 7 || !cells[0]?.startsWith("PRD-") && !cells[0]?.startsWith("SPEC-")) {
+    const headers = splitRow(headerLine);
+    const normalizedHeaders = headers.map(normalizeHeader);
+    if (
+      !normalizedHeaders.includes("id") &&
+      !normalizedHeaders.includes("requirement-id")
+    ) {
+      continue;
+    }
+
+    if (!normalizedHeaders.includes("status")) {
+      continue;
+    }
+
+    if (
+      !normalizedHeaders.some((header) =>
+        header.startsWith("acceptance-criteria") || header.startsWith("measurable-acceptance-criteria"),
+      )
+    ) {
+      continue;
+    }
+
+    const rows: string[][] = [];
+    for (let j = i + 2; j < lines.length; j += 1) {
+      const line = lines[j]!;
+      if (!line.trim().startsWith("|")) {
+        break;
+      }
+      rows.push(splitRow(line));
+    }
+
+    return { headers, rows };
+  }
+
+  throw new Error("Requirement matrix table not found in docs/acceptance-matrix.md");
+}
+
+function parseMatrix(content: string): Row[] {
+  const { headers, rows: rawRows } = extractRequirementTable(content);
+  const normalizedHeaders = headers.map(normalizeHeader);
+  const hasPriorityColumn = normalizedHeaders.includes("priority");
+
+  const reqIdIndex = resolveColumnIndex(headers, "ID", (header) =>
+    header === "id" || header === "req-id" || header === "requirement-id",
+  );
+  const criteriaIndex = resolveColumnIndex(headers, "Acceptance criteria", (header) =>
+    header.startsWith("acceptance-criteria") || header.startsWith("measurable-acceptance-criteria"),
+  );
+  const testsIndex = resolveColumnIndex(headers, "Test linkage", (header) =>
+    header.startsWith("test-benchmark-linkage") || header.startsWith("test-case-id"),
+  );
+  const statusIndex = resolveColumnIndex(headers, "Status", (header) => header === "status");
+  const priorityIndex = hasPriorityColumn
+    ? resolveColumnIndex(headers, "Priority", (header) => header === "priority")
+    : -1;
+
+  const rows: Row[] = [];
+  for (const cells of rawRows) {
+    const reqId = cells[reqIdIndex]?.trim() ?? "";
+    if (!reqId) {
       continue;
     }
 
     rows.push({
-      reqId: cells[0]!,
-      source: cells[1]!,
-      priority: cells[2]!,
-      requirement: cells[3]!,
-      status: cells[4]!,
-      tests: cells[5]!,
-      criteria: cells[6]!,
+      reqId,
+      priority: hasPriorityColumn ? (cells[priorityIndex]?.trim() ?? "") : "Must-have",
+      criteria: cells[criteriaIndex]?.trim() ?? "",
+      tests: cells[testsIndex]?.trim() ?? "",
+      status: cells[statusIndex]?.trim() ?? "",
     });
   }
+
   return rows;
 }
 
-function hasTestLink(value: string): boolean {
+function hasLinkedEvidence(value: string): boolean {
   return value.length > 0 && value !== "-";
 }
 
@@ -48,20 +154,29 @@ if (rows.length === 0) {
   process.exit(1);
 }
 
+const issues: string[] = [];
 const statusCounts = new Map<string, number>();
 for (const row of rows) {
+  if (!VALID_PRIORITIES.has(row.priority)) {
+    issues.push(`${row.reqId}: invalid priority "${row.priority}"`);
+  }
+  if (!VALID_STATUSES.has(row.status)) {
+    issues.push(`${row.reqId}: invalid status "${row.status}"`);
+  }
   statusCounts.set(row.status, (statusCounts.get(row.status) ?? 0) + 1);
 }
 
-const mustRows = rows.filter((row) => row.priority === "Must");
-const gaps: string[] = [];
+const mustRows = rows.filter((row) => row.priority === "Must-have");
+if (mustRows.length === 0) {
+  issues.push("no must-have rows parsed from requirement matrix");
+}
 
 for (const row of mustRows) {
-  if (!hasTestLink(row.tests)) {
-    gaps.push(`${row.reqId}: missing owning test IDs`);
+  if (!hasLinkedEvidence(row.tests)) {
+    issues.push(`${row.reqId}: missing owning test IDs`);
   }
-  if (!row.criteria || row.criteria === "-") {
-    gaps.push(`${row.reqId}: missing pass criteria`);
+  if (!hasLinkedEvidence(row.criteria)) {
+    issues.push(`${row.reqId}: missing pass criteria`);
   }
 }
 
@@ -69,10 +184,10 @@ console.log(`[coverage] parsed rows: ${rows.length}`);
 console.log(`[coverage] must-have rows: ${mustRows.length}`);
 console.log(`[coverage] status counts: ${JSON.stringify(Object.fromEntries(statusCounts))}`);
 
-if (gaps.length > 0) {
+if (issues.length > 0) {
   console.error("[coverage] requirement coverage gaps found:");
-  for (const gap of gaps) {
-    console.error(`  - ${gap}`);
+  for (const issue of issues) {
+    console.error(`  - ${issue}`);
   }
   process.exit(1);
 }
