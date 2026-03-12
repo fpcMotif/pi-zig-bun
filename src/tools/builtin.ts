@@ -279,6 +279,13 @@ export const bashTool: Tool<BashToolInput, ToolResult> = {
     const { command, capabilityTarget } = parseBashInput(input);
 
     ctx.capabilities.require("fs.execute", capabilityTarget);
+    // Strip sensitive environment variables to prevent agent credential leakage
+    const sanitizedEnv = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([key]) => !/(?:API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS)/i.test(key)
+      )
+    );
+
     const result = spawnSync("bash", ["-c", command], {
       cwd: ctx.cwd,
       encoding: "utf8",
@@ -286,6 +293,7 @@ export const bashTool: Tool<BashToolInput, ToolResult> = {
       shell: false,
       timeout: 120_000,
       maxBuffer: 1024 * 1024 * 5,
+      env: sanitizedEnv,
     });
 
     if (result.error) {
