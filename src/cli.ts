@@ -128,7 +128,19 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
       throw new Error("Cannot combine one-shot query flags with explicit command");
     }
     options.command = command;
-    options.query = positional.slice(1).join(" ").trim();
+
+    // Construct query from all tokens after the command in argv, excluding global flags that take arguments
+    const cmdIndex = argv.indexOf(positional[0]!);
+    const queryTokens = [];
+    for (let i = cmdIndex + 1; i < argv.length; i++) {
+      const t = argv[i]!;
+      if (["-c", "--cwd", "-l", "--limit", "-r", "--root-session"].includes(t)) {
+        i++; // skip flag and its value
+        continue;
+      }
+      queryTokens.push(t);
+    }
+    options.query = queryTokens.join(" ").trim();
     return options;
   }
 
