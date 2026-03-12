@@ -128,7 +128,13 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
       throw new Error("Cannot combine one-shot query flags with explicit command");
     }
     options.command = command;
-    options.query = positional.slice(1).join(" ").trim();
+    // For search/grep commands, we want to capture everything after the command as the query, including flags like --json that were parsed out
+    if (command === "search" || command === "grep") {
+      const commandIndex = argv.indexOf(positional[0]!);
+      options.query = argv.slice(commandIndex + 1).join(" ");
+    } else {
+      options.query = positional.slice(1).join(" ").trim();
+    }
     return options;
   }
 
