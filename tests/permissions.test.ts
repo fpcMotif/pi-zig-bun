@@ -57,9 +57,9 @@ describe("CapabilityManager glob and transitions", () => {
 });
 
 describe("loadPolicyFile", () => {
-  test("returns an empty policy when the file is missing", () => {
+  test("returns an empty policy when the file is missing", async () => {
     const missingPath = path.join(os.tmpdir(), `missing-policy-${crypto.randomUUID()}.json`);
-    expect(loadPolicyFile(missingPath)).toEqual({});
+    expect(await loadPolicyFile(missingPath)).toEqual({});
   });
 
   test("throws when policy JSON is invalid", async () => {
@@ -67,7 +67,7 @@ describe("loadPolicyFile", () => {
     try {
       const policyPath = path.join(root, "policy.json");
       await writeFile(policyPath, "{not-json", "utf8");
-      expect(() => loadPolicyFile(policyPath)).toThrow();
+      await expect(loadPolicyFile(policyPath)).rejects.toThrow();
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -78,7 +78,7 @@ describe("loadPolicyFile", () => {
     try {
       const policyPath = path.join(root, "policy.json");
       await writeFile(policyPath, JSON.stringify(["fs.read"]), "utf8");
-      expect(() => loadPolicyFile(policyPath)).toThrow("policy.json must be a JSON object");
+      await expect(loadPolicyFile(policyPath)).rejects.toThrow("policy.json must be a JSON object");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -94,7 +94,7 @@ describe("loadPolicyFile", () => {
         ignored: 123,
       }), "utf8");
 
-      expect(loadPolicyFile(policyPath)).toEqual({
+      expect(await loadPolicyFile(policyPath)).toEqual({
         "fs.read": ["src/**"],
         "fs.write": "*",
       });

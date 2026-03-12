@@ -118,9 +118,9 @@ export class CapabilityManager {
   }
 }
 
-export function loadPolicyFile(policyPath: string): CapabilityPolicy {
+export async function loadPolicyFile(policyPath: string): Promise<CapabilityPolicy> {
   try {
-    const raw = require("node:fs").readFileSync(policyPath, "utf8");
+    const raw = await require("node:fs/promises").readFile(policyPath, "utf8");
     const parsed = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       throw new Error("policy.json must be a JSON object");
