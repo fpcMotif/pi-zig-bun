@@ -1036,12 +1036,12 @@ fn loweredSlice(allocator: Allocator, input: []const u8) ![]const u8 {
     return out;
 }
 
-fn writeResult(writer: *std.Io.Writer, id: i64, payload: anytype) !void {
+fn writeResult(writer: anytype, id: i64, payload: anytype) !void {
     try writer.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{f}}}\n", .{ id, std.json.fmt(payload, .{}) });
     try writer.flush();
 }
 
-fn writeError(writer: *std.Io.Writer, id: i64, code: i32, message: []const u8) !void {
+fn writeError(writer: anytype, id: i64, code: i32, message: []const u8) !void {
     const payload = struct {
         code: i32,
         message: []const u8,
@@ -1054,7 +1054,7 @@ fn writeError(writer: *std.Io.Writer, id: i64, code: i32, message: []const u8) !
 fn handleRequest(
     allocator: Allocator,
     state: *SearchState,
-    writer: *std.Io.Writer,
+    writer: anytype,
     line: []const u8,
 ) !void {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
@@ -1280,6 +1280,7 @@ test "fuzzy ranking prefers exact file name match" {
         .file_name_lower = "alpha.ts",
         .modified_ms = 0,
         .size = 10,
+        .frecency = 0,
     };
     const fuzzy = SearchEntry{
         .abs_path = "alpah.ts",
@@ -1289,6 +1290,7 @@ test "fuzzy ranking prefers exact file name match" {
         .file_name_lower = "alpah.ts",
         .modified_ms = 0,
         .size = 10,
+        .frecency = 0,
     };
 
     const exact_score = try scorePathMatch(query, exact, 2, allocator);
@@ -1333,7 +1335,7 @@ test "json-rpc contract handles ping and unknown methods" {
     var out_buf: [4096]u8 = undefined;
     var stream = std.io.fixedBufferStream(&out_buf);
     var writer = stream.writer();
-    const iface = &writer.interface;
+    const iface = &writer;
 
     try handleRequest(allocator, &state, iface, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}");
     try handleRequest(allocator, &state, iface, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"missing\"}");
