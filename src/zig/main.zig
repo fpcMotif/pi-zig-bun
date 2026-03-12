@@ -1278,6 +1278,7 @@ test "fuzzy ranking prefers exact file name match" {
         .rel_path_lower = "alpha.ts",
         .file_name = "alpha.ts",
         .file_name_lower = "alpha.ts",
+        .frecency = 0,
         .modified_ms = 0,
         .size = 10,
     };
@@ -1287,6 +1288,7 @@ test "fuzzy ranking prefers exact file name match" {
         .rel_path_lower = "alpah.ts",
         .file_name = "alpah.ts",
         .file_name_lower = "alpah.ts",
+        .frecency = 0,
         .modified_ms = 0,
         .size = 10,
     };
@@ -1333,10 +1335,8 @@ test "json-rpc contract handles ping and unknown methods" {
     var out_buf: [4096]u8 = undefined;
     var stream = std.io.fixedBufferStream(&out_buf);
     var writer = stream.writer();
-    const iface = &writer.interface;
-
-    try handleRequest(allocator, &state, iface, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}");
-    try handleRequest(allocator, &state, iface, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"missing\"}");
+    try handleRequest(allocator, &state, &writer, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}");
+    try handleRequest(allocator, &state, &writer, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"missing\"}");
 
     const output = stream.getWritten();
     try std.testing.expect(mem.indexOf(u8, output, "\"result\":\"pong\"") != null);
