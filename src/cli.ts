@@ -78,8 +78,10 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
     if (!token.startsWith("-")) {
       if (!command) {
         command = normalizeCommand(token);
-        i += 1;
-        break;
+        if (command) {
+          i += 1;
+          break;
+        }
       }
       i += 1;
       continue;
