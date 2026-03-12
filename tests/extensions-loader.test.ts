@@ -256,7 +256,6 @@ describe("watchSkills", () => {
       // Ensure watcher has time to initialize
       await wait(500);
 
-      // Override console.error temporarily to suppress output and verify it's called
       let errorCalled = false;
       const mockLogger = { error: () => { errorCalled = true; } };
 
@@ -265,9 +264,8 @@ describe("watchSkills", () => {
       watcher = watchSkills(registry, [root], mockLogger);
       await wait(500);
 
-      try {
-        // Create a new file so watch event reliably fires on Linux/tmpfs
-        const badPath = path.join(root, "error2.ts");
+      // Create a new file so watch event reliably fires on Linux/tmpfs
+      const badPath = path.join(root, "error2.ts");
         await writeFile(badPath, `
           throw new Error("Boom");
         `, "utf8");
@@ -279,7 +277,6 @@ describe("watchSkills", () => {
         }
 
         expect(errorCalled).toBe(true);
-      }
 
     } finally {
       if (watcher) watcher.stop();
