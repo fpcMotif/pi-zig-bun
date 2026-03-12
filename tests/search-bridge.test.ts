@@ -100,6 +100,26 @@ describe("SearchBridge protocol behavior", () => {
     }
   });
 
+  test("rejects pending calls immediately when process exits mid-request", async () => {
+    const fixture = await createFakeBridgeBinary("timeout");
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 5000 });
+    try {
+      const callPromise = bridge.call("search.files", { query: "abc" });
+
+      // Wait for process to spawn and request to be sent
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Force kill the process mid-request
+      // @ts-ignore - access private field for testing
+      bridge.proc.kill("SIGKILL");
+
+      await expect(callPromise).rejects.toThrow(/exited with signal SIGKILL/);
+    } finally {
+      await bridge.stop();
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   test("enforces single-flight by rejecting interrupted concurrent call", async () => {
     const fixture = await createFakeBridgeBinary("timeout");
     const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
