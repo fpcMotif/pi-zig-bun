@@ -257,9 +257,13 @@ describe("watchSkills", () => {
       await wait(500);
 
       // Override console.error temporarily to suppress output and verify it's called
-      const originalConsoleError = console.error;
       let errorCalled = false;
-      console.error = () => { errorCalled = true; };
+      const mockLogger = { error: () => { errorCalled = true; } };
+
+      // Overwrite the previous watcher that used the default logger
+      watcher.stop();
+      watcher = watchSkills(registry, [root], mockLogger);
+      await wait(500);
 
       try {
         // Create a new file so watch event reliably fires on Linux/tmpfs
@@ -275,8 +279,6 @@ describe("watchSkills", () => {
         }
 
         expect(errorCalled).toBe(true);
-      } finally {
-        console.error = originalConsoleError;
       }
 
     } finally {
