@@ -30,8 +30,8 @@ rl.on("line", (line) => {
     // Fallthrough to write actual result so we can test it ignored the malformed line
   }
   if (mode === "rpc_error_sensitive") {
-    const errorPayload = JSON.stringify({ jsonrpc: "2.0", id: req.id, error: { code: -32600, message: "Error occurred at binary " + binaryPath + " in workspace " + root } });
-    process.stdout.write(errorPayload + "\n");
+    const errorPayload = JSON.stringify({ jsonrpc: "2.0", id: req.id, error: { code: -32600, message: ${JSON.stringify(`Error occurred at binary ${binaryPath} in workspace ${root}`)} } });
+    process.stdout.write(errorPayload + "\\n");
     return;
   }
   if (mode === "rpc_error") {
@@ -187,7 +187,7 @@ describe("SearchBridge protocol behavior", () => {
     const fixture = await createFakeBridgeBinary("rpc_error_sensitive");
     const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
     try {
-      await expect(bridge.call("search.files", { query: "abc" })).rejects.toThrow("-32600: Error occurred at binary \\[BINARY_PATH\\] in workspace \\[WORKSPACE_ROOT\\]");
+      await expect(bridge.call("search.files", { query: "abc" })).rejects.toThrow("-32600: Error occurred at binary [BINARY_PATH] in workspace [WORKSPACE_ROOT]");
     } finally {
       await bridge.stop();
       await rm(fixture.root, { recursive: true, force: true });

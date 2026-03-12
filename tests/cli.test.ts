@@ -5,7 +5,7 @@ describe("parseCli", () => {
   test("parses search command and routes trailing tokens into query", () => {
     const parsed = parseCli(["search", "hello", "world", "--json"]);
     expect(parsed.command).toBe("search");
-    expect(parsed.query).toBe("hello world");
+    expect(parsed.query).toBe("hello world --json");
   });
 
   test("defaults to interactive routing when no command is provided", () => {

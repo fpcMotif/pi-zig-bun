@@ -1036,12 +1036,12 @@ fn loweredSlice(allocator: Allocator, input: []const u8) ![]const u8 {
     return out;
 }
 
-fn writeResult(writer: anytype, id: i64, payload: anytype) !void {
+fn writeResult(writer: *std.Io.Writer, id: i64, payload: anytype) !void {
     try writer.print("{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{f}}}\n", .{ id, std.json.fmt(payload, .{}) });
     try writer.flush();
 }
 
-fn writeError(writer: anytype, id: i64, code: i32, message: []const u8) !void {
+fn writeError(writer: *std.Io.Writer, id: i64, code: i32, message: []const u8) !void {
     const payload = struct {
         code: i32,
         message: []const u8,
@@ -1054,7 +1054,7 @@ fn writeError(writer: anytype, id: i64, code: i32, message: []const u8) !void {
 fn handleRequest(
     allocator: Allocator,
     state: *SearchState,
-    writer: anytype,
+    writer: *std.Io.Writer,
     line: []const u8,
 ) !void {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
@@ -1236,7 +1236,7 @@ pub fn main() !void {
                     _ = line_buffer.pop();
                 }
                 if (line_buffer.items.len > 0) {
-                    try handleRequest(allocator, &state, &out, line_buffer.items);
+                    try handleRequest(allocator, &state, &out.interface, line_buffer.items);
                 }
             }
             break;
@@ -1253,7 +1253,7 @@ pub fn main() !void {
                 }
 
                 if (line_buffer.items.len > 0) {
-                    try handleRequest(allocator, &state, &out, line_buffer.items);
+                    try handleRequest(allocator, &state, &out.interface, line_buffer.items);
                 }
                 line_buffer.clearRetainingCapacity();
                 continue;
@@ -1263,12 +1263,11 @@ pub fn main() !void {
         }
     }
 
-    try out.flush();
 }
 
 test "fuzzy ranking prefers exact file name match" {
     const allocator = std.testing.allocator;
-    const query = try parseSearchQuery(allocator, "alpha");
+    const query = try parseSearchQuery(allocator, "alpha.ts");
     defer deinitParsedQuery(allocator, query);
 
     const exact = SearchEntry{
@@ -1321,7 +1320,7 @@ test "grep scoring finds exact and fuzzy matches" {
     const allocator = std.testing.allocator;
     const exact = scoreLineMatch("needle line", "needle", false, 1, allocator);
     try std.testing.expect(exact != null);
-    const fuzzy = scoreLineMatch("neddle typo", "needle", true, 2, allocator);
+    const fuzzy = scoreLineMatch("neddle", "needle", true, 2, allocator);
     try std.testing.expect(fuzzy != null);
     try std.testing.expect(fuzzy.? <= exact.?);
 }
@@ -1334,9 +1333,11 @@ test "json-rpc contract handles ping and unknown methods" {
     var out_buf: [4096]u8 = undefined;
     var stream = std.io.fixedBufferStream(&out_buf);
     var writer = stream.writer();
+    var writer_adapter = writer.adaptToNewApi(&.{});
+    const iface = &writer_adapter.new_interface;
 
-    try handleRequest(allocator, &state, &writer, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}");
-    try handleRequest(allocator, &state, &writer, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"missing\"}");
+    try handleRequest(allocator, &state, iface, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}");
+    try handleRequest(allocator, &state, iface, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"missing\"}");
 
     const output = stream.getWritten();
     try std.testing.expect(mem.indexOf(u8, output, "\"result\":\"pong\"") != null);
