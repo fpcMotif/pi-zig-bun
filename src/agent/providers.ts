@@ -242,8 +242,17 @@ export class GoogleGenAIAdapter extends BaseSseAgent {
   }
 
   protected parseChunk(payload: unknown) {
-    const data = payload as Record<string, any>;
-    const text = data?.candidates?.[0]?.content?.parts?.map((p: Record<string, any>) => p.text ?? "").join("") ?? "";
-    return { token: text || undefined, done: Boolean(data?.candidates?.[0]?.finishReason) };
+    const data = payload as {
+      candidates?: Array<{
+        content?: {
+          parts?: Array<{
+            text?: string;
+          }>;
+        };
+        finishReason?: string;
+      }>;
+    };
+    const text = data.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
+    return { token: text || undefined, done: Boolean(data.candidates?.[0]?.finishReason) };
   }
 }
