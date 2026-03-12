@@ -10,7 +10,8 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     env:
-      CACHE_VERSION: v2
+      CACHE_VERSION: v3
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
       - name: Checkout
@@ -32,7 +33,7 @@ jobs:
             bun-${{ runner.os }}-${{ env.CACHE_VERSION }}-
 
       - name: Setup Zig
-        uses: goto-bus-stop/setup-zig@v3
+        uses: goto-bus-stop/setup-zig@v2
         with:
           version: 0.15.2
 
