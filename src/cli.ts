@@ -47,6 +47,14 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
 
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i]!;
+
+    if (positional.length > 0 && normalizeCommand(positional[0]) !== undefined) {
+      if (normalizeCommand(positional[0]) === "search" || normalizeCommand(positional[0]) === "grep") {
+        positional.push(token);
+        continue;
+      }
+    }
+
     if (!token.startsWith("-")) {
       positional.push(token);
       continue;
