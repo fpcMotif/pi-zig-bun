@@ -3,7 +3,11 @@ import { readFile, stat, mkdir, writeFile, open } from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import type { Capability, ToolResult } from "../permissions";
-import type { Tool, ToolCapabilityRequirement, ToolExecutionContext } from "./types";
+import type {
+  Tool,
+  ToolCapabilityRequirement,
+  ToolExecutionContext,
+} from "./types";
 
 /** Hard ceiling on file reads to prevent OOM from enormous files. */
 const MAX_READ_BYTES = 500_000;
@@ -55,14 +59,24 @@ function requireBoolean(value: unknown, field: string): boolean {
   return value;
 }
 
-function toCapabilityTarget(workspaceRoot: string, resolvedPath: string): string {
+function toCapabilityTarget(
+  workspaceRoot: string,
+  resolvedPath: string,
+): string {
   const relativePath = path.relative(workspaceRoot, resolvedPath);
   return relativePath === "" ? "." : relativePath.split(path.sep).join("/");
 }
 
-function ensurePathInsideWorkspace(workspaceRoot: string, resolvedPath: string): void {
+function ensurePathInsideWorkspace(
+  workspaceRoot: string,
+  resolvedPath: string,
+): void {
   const relativePath = path.relative(workspaceRoot, resolvedPath);
-  if (path.isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith(`..${path.sep}`)) {
+  if (
+    path.isAbsolute(relativePath) ||
+    relativePath === ".." ||
+    relativePath.startsWith(`..${path.sep}`)
+  ) {
     throw new Error("Path traversal detected");
   }
 }
@@ -81,7 +95,10 @@ function findNearestExistingAncestor(targetPath: string): string | undefined {
   return currentPath;
 }
 
-function ensureNoSymlinkEscape(workspaceRoot: string, resolvedPath: string): void {
+function ensureNoSymlinkEscape(
+  workspaceRoot: string,
+  resolvedPath: string,
+): void {
   const ancestor = findNearestExistingAncestor(resolvedPath);
   if (!ancestor) {
     return;
@@ -91,12 +108,56 @@ function ensureNoSymlinkEscape(workspaceRoot: string, resolvedPath: string): voi
   const realAncestor = realpathSync(ancestor);
   const relativePath = path.relative(realWorkspaceRoot, realAncestor);
 
-  if (path.isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith(`..${path.sep}`)) {
+  if (
+    path.isAbsolute(relativePath) ||
+    relativePath === ".." ||
+    relativePath.startsWith(`..${path.sep}`)
+  ) {
     throw new Error("Path traversal detected (symlink escape)");
   }
 }
 
-function resolveWorkspacePath(ctx: ToolExecutionContext, inputPath: unknown): ResolvedPathInput {
+async function acquireSafeFileHandle(
+  workspaceRoot: string,
+  resolvedPath: string,
+  flags: string,
+) {
+  const fileHandle = await open(resolvedPath, flags);
+
+  try {
+    const fdStat = await fileHandle.stat();
+
+    // Validate the realpath of the opened file
+    const { realpath } = await import("node:fs/promises");
+    const real = await realpath(resolvedPath);
+    const realStat = await stat(real);
+
+    if (fdStat.ino !== realStat.ino || fdStat.dev !== realStat.dev) {
+      throw new Error("Path traversal detected (symlink changed during open)");
+    }
+
+    const realWorkspaceRoot = realpathSync(workspaceRoot);
+    const relativePath = path.relative(realWorkspaceRoot, real);
+
+    if (
+      path.isAbsolute(relativePath) ||
+      relativePath === ".." ||
+      relativePath.startsWith(`..${path.sep}`)
+    ) {
+      throw new Error("Path traversal detected (symlink escape)");
+    }
+
+    return fileHandle;
+  } catch (error) {
+    await fileHandle.close();
+    throw error;
+  }
+}
+
+function resolveWorkspacePath(
+  ctx: ToolExecutionContext,
+  inputPath: unknown,
+): ResolvedPathInput {
   const workspaceRoot = path.resolve(ctx.cwd);
   const requestedPath = requireNonBlankString(inputPath, "path");
   const resolvedPath = path.resolve(workspaceRoot, requestedPath);
@@ -114,22 +175,37 @@ function toPathCapabilityRequirements(
   capabilityTarget: string,
   capabilities: readonly Capability[],
 ): ToolCapabilityRequirement[] {
-  return capabilities.map((capability) => ({ capability, target: capabilityTarget }));
+  return capabilities.map((capability) => ({
+    capability,
+    target: capabilityTarget,
+  }));
 }
 
-function parseReadInput(ctx: ToolExecutionContext, input: ReadToolInput): ResolvedPathInput {
+function parseReadInput(
+  ctx: ToolExecutionContext,
+  input: ReadToolInput,
+): ResolvedPathInput {
   return resolveWorkspacePath(ctx, input.path);
 }
 
-function parseWriteInput(ctx: ToolExecutionContext, input: WriteToolInput): ParsedWriteInput {
+function parseWriteInput(
+  ctx: ToolExecutionContext,
+  input: WriteToolInput,
+): ParsedWriteInput {
   return {
     ...resolveWorkspacePath(ctx, input.path),
     content: requireString(input.content, "content"),
-    overwrite: input.overwrite === undefined ? true : requireBoolean(input.overwrite, "overwrite"),
+    overwrite:
+      input.overwrite === undefined
+        ? true
+        : requireBoolean(input.overwrite, "overwrite"),
   };
 }
 
-function parseEditInput(ctx: ToolExecutionContext, input: EditToolInput): ParsedEditInput {
+function parseEditInput(
+  ctx: ToolExecutionContext,
+  input: EditToolInput,
+): ParsedEditInput {
   const from = requireString(input.from, "from");
   if (from.length === 0) {
     throw new Error("from must not be empty");
@@ -167,22 +243,31 @@ export const readTool: Tool<ReadToolInput, ToolResult> = {
     const { resolvedPath, capabilityTarget } = parseReadInput(ctx, input);
     ctx.capabilities.require("fs.read", capabilityTarget);
 
-    const stats = await stat(resolvedPath);
-    if (stats.size > MAX_READ_BYTES) {
-      return {
-        ok: false,
-        error: `file too large (${stats.size} bytes)`,
-      };
-    }
+    const fileHandle = await acquireSafeFileHandle(
+      path.resolve(ctx.cwd),
+      resolvedPath,
+      "r",
+    );
+    try {
+      const stats = await fileHandle.stat();
+      if (stats.size > MAX_READ_BYTES) {
+        return {
+          ok: false,
+          error: `file too large (${stats.size} bytes)`,
+        };
+      }
 
-    const data = await readFile(resolvedPath);
-    return {
-      ok: true,
-      output: data.toString("utf8"),
-      data: {
-        bytes: data.length,
-      },
-    };
+      const data = await fileHandle.readFile();
+      return {
+        ok: true,
+        output: data.toString("utf8"),
+        data: {
+          bytes: data.length,
+        },
+      };
+    } finally {
+      await fileHandle.close();
+    }
   },
 };
 
@@ -196,18 +281,23 @@ export const writeTool: Tool<WriteToolInput, ToolResult> = {
     return toPathCapabilityRequirements(capabilityTarget, WRITE_CAPABILITIES);
   },
   async execute(ctx, input): Promise<ToolResult> {
-    const { resolvedPath, capabilityTarget, content, overwrite } = parseWriteInput(ctx, input);
+    const { resolvedPath, capabilityTarget, content, overwrite } =
+      parseWriteInput(ctx, input);
     ctx.capabilities.require("fs.write", capabilityTarget);
 
     await mkdir(path.dirname(resolvedPath), { recursive: true });
 
+    const flag = overwrite ? "w" : "wx";
+    let fileHandle;
     try {
-      if (overwrite) {
-        await writeFile(resolvedPath, content);
-      } else {
-        await writeFile(resolvedPath, content, { flag: "wx" });
-      }
+      fileHandle = await acquireSafeFileHandle(
+        path.resolve(ctx.cwd),
+        resolvedPath,
+        flag,
+      );
+      await fileHandle.writeFile(content);
     } catch (error) {
+      if (fileHandle) await fileHandle.close();
       const fileError = error as NodeJS.ErrnoException;
       if (!overwrite && fileError.code === "EEXIST") {
         return {
@@ -216,6 +306,8 @@ export const writeTool: Tool<WriteToolInput, ToolResult> = {
         };
       }
       throw error;
+    } finally {
+      if (fileHandle) await fileHandle.close();
     }
 
     return {
@@ -236,11 +328,18 @@ export const editTool: Tool<EditToolInput, ToolResult> = {
     return toPathCapabilityRequirements(capabilityTarget, EDIT_CAPABILITIES);
   },
   async execute(ctx, input): Promise<ToolResult> {
-    const { resolvedPath, capabilityTarget, from, to } = parseEditInput(ctx, input);
+    const { resolvedPath, capabilityTarget, from, to } = parseEditInput(
+      ctx,
+      input,
+    );
     ctx.capabilities.require("fs.read", capabilityTarget);
     ctx.capabilities.require("fs.write", capabilityTarget);
 
-    const fileHandle = await open(resolvedPath, "r+");
+    const fileHandle = await acquireSafeFileHandle(
+      path.resolve(ctx.cwd),
+      resolvedPath,
+      "r+",
+    );
 
     try {
       const payload = await fileHandle.readFile("utf8");
