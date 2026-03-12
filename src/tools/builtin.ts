@@ -33,6 +33,8 @@ interface ParsedBashInput {
   capabilityTarget: string;
 }
 
+type OpenFileHandle = Awaited<ReturnType<typeof open>>;
+
 function requireString(value: unknown, field: string): string {
   if (typeof value !== "string") {
     throw new Error(`${field} must be a string`);
@@ -93,6 +95,35 @@ async function ensureNoSymlinkEscape(workspaceRoot: string, resolvedPath: string
 
   if (path.isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith(`..${path.sep}`)) {
     throw new Error("Path traversal detected (symlink escape)");
+  }
+}
+
+// Open the file first, then verify the opened inode still matches the resolved
+// path so symlink swaps between check and use are rejected.
+async function acquireSafeFileHandle(
+  workspaceRoot: string,
+  resolvedPath: string,
+  flags: string,
+): Promise<OpenFileHandle> {
+  const fileHandle = await open(resolvedPath, flags);
+
+  try {
+    const [fdStat, realWorkspaceRoot, realResolvedPath] = await Promise.all([
+      fileHandle.stat(),
+      realpath(workspaceRoot),
+      realpath(resolvedPath),
+    ]);
+    const realStat = await stat(realResolvedPath);
+
+    if (fdStat.ino !== realStat.ino || fdStat.dev !== realStat.dev) {
+      throw new Error("Path traversal detected (symlink changed during open)");
+    }
+
+    ensurePathInsideWorkspace(realWorkspaceRoot, realResolvedPath);
+    return fileHandle;
+  } catch (error) {
+    await fileHandle.close();
+    throw error;
   }
 }
 
@@ -167,22 +198,27 @@ export const readTool: Tool<ReadToolInput, ToolResult> = {
     await ensureNoSymlinkEscape(path.resolve(ctx.cwd), resolvedPath);
     ctx.capabilities.require("fs.read", capabilityTarget);
 
-    const stats = await stat(resolvedPath);
-    if (stats.size > MAX_READ_BYTES) {
-      return {
-        ok: false,
-        error: `file too large (${stats.size} bytes)`,
-      };
-    }
+    const fileHandle = await acquireSafeFileHandle(path.resolve(ctx.cwd), resolvedPath, "r");
+    try {
+      const stats = await fileHandle.stat();
+      if (stats.size > MAX_READ_BYTES) {
+        return {
+          ok: false,
+          error: `file too large (${stats.size} bytes)`,
+        };
+      }
 
-    const data = await readFile(resolvedPath);
-    return {
-      ok: true,
-      output: data.toString("utf8"),
-      data: {
-        bytes: data.length,
-      },
-    };
+      const data = await fileHandle.readFile();
+      return {
+        ok: true,
+        output: data.toString("utf8"),
+        data: {
+          bytes: data.length,
+        },
+      };
+    } finally {
+      await fileHandle.close();
+    }
   },
 };
 
@@ -202,12 +238,14 @@ export const writeTool: Tool<WriteToolInput, ToolResult> = {
 
     await mkdir(path.dirname(resolvedPath), { recursive: true });
 
+    let fileHandle: OpenFileHandle | undefined;
     try {
-      if (overwrite) {
-        await writeFile(resolvedPath, content);
-      } else {
-        await writeFile(resolvedPath, content, { flag: "wx" });
-      }
+      fileHandle = await acquireSafeFileHandle(
+        path.resolve(ctx.cwd),
+        resolvedPath,
+        overwrite ? "w" : "wx",
+      );
+      await fileHandle.writeFile(content);
     } catch (error) {
       const fileError = error as NodeJS.ErrnoException;
       if (!overwrite && fileError.code === "EEXIST") {
@@ -217,6 +255,8 @@ export const writeTool: Tool<WriteToolInput, ToolResult> = {
         };
       }
       throw error;
+    } finally {
+      await fileHandle?.close();
     }
 
     return {
@@ -242,7 +282,7 @@ export const editTool: Tool<EditToolInput, ToolResult> = {
     ctx.capabilities.require("fs.read", capabilityTarget);
     ctx.capabilities.require("fs.write", capabilityTarget);
 
-    const fileHandle = await open(resolvedPath, "r+");
+    const fileHandle = await acquireSafeFileHandle(path.resolve(ctx.cwd), resolvedPath, "r+");
 
     try {
       const payload = await fileHandle.readFile("utf8");
