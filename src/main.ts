@@ -480,8 +480,14 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
       case "tree": {
         return await runTreeCommand(runtime, args.json);
       }
-      case "session":
-        return await runSessionCommand(runtime, args.rootSession, args.json);
+      case "session": {
+        let sessionId = args.rootSession;
+        if (!sessionId && args.query) {
+          const match = args.query.match(/--root-session\s+(\S+)/);
+          if (match) sessionId = match[1];
+        }
+        return await runSessionCommand(runtime, sessionId, args.json);
+      }
       case "login":
         return runLoginCommand(args.json);
       case "interactive":
