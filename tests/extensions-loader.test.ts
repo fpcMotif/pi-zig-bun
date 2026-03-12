@@ -58,6 +58,23 @@ describe("loadSkills", () => {
     }
   });
 
+  test("handles errors thrown during skill registration", async () => {
+    const root = await tempDir("pi-skill-throw-");
+    try {
+      await writeFile(path.join(root, "throws.ts"), `export default { name: "throws", register() { throw new Error("registration failed") } }`, "utf8");
+
+      const registry = new MemoryToolRegistry();
+      const result = await loadSkills(registry, [root]);
+      expect(result.loaded).toBe(0);
+      expect(result.failed).toBe(1);
+      expect(result.errors[0]).toContain("Failed to load");
+      expect(result.errors[0]).toContain("registration failed");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+
   test("returns zero loaded when no skills are discovered", async () => {
     const root = await tempDir("pi-skill-empty-");
     try {
