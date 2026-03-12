@@ -170,8 +170,9 @@ export class OpenAIAdapter extends BaseSseAgent {
     };
   }
 
-  protected parseChunk(payload: any) {
-    const choice = payload?.choices?.[0];
+  protected parseChunk(payload: unknown) {
+    const data = payload as Record<string, any>;
+    const choice = data?.choices?.[0];
     const delta = choice?.delta;
     const token = typeof delta?.content === "string" ? delta.content : undefined;
     const toolCall = delta?.tool_calls?.[0]
@@ -205,20 +206,21 @@ export class AnthropicAdapter extends BaseSseAgent {
     };
   }
 
-  protected parseChunk(payload: any) {
-    if (payload?.type === "content_block_delta" && payload?.delta?.type === "text_delta") {
-      return { token: payload.delta.text };
+  protected parseChunk(payload: unknown) {
+    const data = payload as Record<string, any>;
+    if (data?.type === "content_block_delta" && data?.delta?.type === "text_delta") {
+      return { token: data.delta.text };
     }
-    if (payload?.type === "content_block_start" && payload?.content_block?.type === "tool_use") {
+    if (data?.type === "content_block_start" && data?.content_block?.type === "tool_use") {
       return {
         toolCall: {
-          id: payload.content_block.id,
-          name: payload.content_block.name ?? "tool",
-          arguments: JSON.stringify(payload.content_block.input ?? {}),
+          id: data.content_block.id,
+          name: data.content_block.name ?? "tool",
+          arguments: JSON.stringify(data.content_block.input ?? {}),
         },
       };
     }
-    return { done: payload?.type === "message_stop" };
+    return { done: data?.type === "message_stop" };
   }
 }
 
@@ -239,8 +241,9 @@ export class GoogleGenAIAdapter extends BaseSseAgent {
     };
   }
 
-  protected parseChunk(payload: any) {
-    const text = payload?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? "").join("") ?? "";
-    return { token: text || undefined, done: Boolean(payload?.candidates?.[0]?.finishReason) };
+  protected parseChunk(payload: unknown) {
+    const data = payload as Record<string, any>;
+    const text = data?.candidates?.[0]?.content?.parts?.map((p: Record<string, any>) => p.text ?? "").join("") ?? "";
+    return { token: text || undefined, done: Boolean(data?.candidates?.[0]?.finishReason) };
   }
 }
