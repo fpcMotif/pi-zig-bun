@@ -133,9 +133,11 @@ describe("SessionTree invariants", () => {
       const tree = new SessionTree(store);
       const rootTurn = await tree.createRoot("system", "root");
 
-      await appendFile(path.join(root, ".pi", "sessions.jsonl"), "not valid json\n", "utf8");
+      await appendFile(path.join(root, ".pi", "sessions.jsonl"), "\nnot valid json\n", "utf8");
 
-      const turns = await store.allTurns();
+      // Use a new store to bypass any in-memory caching and force deserialization from disk
+      const readerStore = new SessionStore(root);
+      const turns = await readerStore.allTurns();
 
       expect(turns).toHaveLength(1);
       expect(turns[0]?.id).toBe(rootTurn.id);
