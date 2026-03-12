@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { SearchBridge } from "../src/search/bridge";
 
-async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash" | "stderr" | "stderr_sensitive" | "malformed" | "rpc_error"): Promise<{ root: string; binaryPath: string }> {
+async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash" | "stderr" | "stderr_sensitive" | "malformed" | "rpc_error" ): Promise<{ root: string; binaryPath: string }> {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-bridge-"));
   const binaryPath = path.join(root, "fake-bridge.mjs");
   const script = `#!/usr/bin/env node
@@ -28,6 +28,12 @@ rl.on("line", (line) => {
   if (mode === "malformed") {
     process.stdout.write("not json\\n");
     // Fallthrough to write actual result so we can test it ignored the malformed line
+  }
+
+  if (mode === "rpc_error_sensitive") {
+    const errorPayload = JSON.stringify({ jsonrpc: "2.0", id: req.id, error: { code: -32000, message: "RPC Error in ${binaryPath} at ${root}" } });
+    process.stdout.write(errorPayload + "\\n");
+    return;
   }
   if (mode === "rpc_error") {
     const errorPayload = JSON.stringify({ jsonrpc: "2.0", id: req.id, error: { code: -32600, message: "Invalid Request" } });
@@ -157,6 +163,8 @@ describe("SearchBridge protocol behavior", () => {
       await rm(fixture.root, { recursive: true, force: true });
     }
   });
+
+
 
   test("rejects call when rpc returns error", async () => {
     const fixture = await createFakeBridgeBinary("rpc_error");

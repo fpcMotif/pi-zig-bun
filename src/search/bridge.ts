@@ -131,7 +131,7 @@ export class SearchBridge {
           if (!existsSync(piDir)) {
             mkdirSync(piDir, { recursive: true });
           }
-          appendFileSync(stderrLog, this.scrub(chunk.toString()));
+          appendFileSync(stderrLog, this.scrub(chunk.toString())); // Scrubbed
         } catch {
           // ignore logging errors to prevent breaking the bridge
         }
