@@ -69,10 +69,6 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
     }
 
     switch (token) {
-      case "--json":
-      case "-j":
-        options.json = true;
-        continue;
       case "-h":
       case "--help":
         options.help = true;

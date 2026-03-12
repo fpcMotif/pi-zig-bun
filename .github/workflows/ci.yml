@@ -33,7 +33,7 @@ jobs:
             bun-${{ runner.os }}-${{ env.CACHE_VERSION }}-
 
       - name: Setup Zig
-        uses: goto-bus-stop/setup-zig@v2
+        uses: mlugg/setup-zig@v2
         with:
           version: 0.15.2
 
@@ -95,6 +95,9 @@ jobs:
 
       - name: Check requirements trace coverage
         run: bun run ci:requirements-coverage
+
+      - name: Verify acceptance traceability
+        run: bun run ci:acceptance
 
       - name: Upload CI artifacts
         if: always()

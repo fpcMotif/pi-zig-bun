@@ -103,7 +103,7 @@ function extractRequirementTable(content: string): { headers: string[]; rows: st
   throw new Error("Requirement matrix table not found in docs/acceptance-matrix.md");
 }
 
-function parseMatrix(content: string): Row[] {
+export function parseMatrix(content: string): Row[] {
   const { headers, rows: rawRows } = extractRequirementTable(content);
   const normalizedHeaders = headers.map(normalizeHeader);
   const hasPriorityColumn = normalizedHeaders.includes("priority");
@@ -143,6 +143,36 @@ function parseMatrix(content: string): Row[] {
 
 function hasLinkedEvidence(value: string): boolean {
   return value.length > 0 && value !== "-";
+}
+
+export function analyzeMatrix(content: string): {
+  rows: Row[];
+  mustRows: Row[];
+  statusCounts: Record<string, number>;
+  issues: string[];
+} {
+  const rows = parseMatrix(content);
+  const issues: string[] = [];
+  const statusCounts: Record<string, number> = {};
+  for (const row of rows) {
+    if (!VALID_PRIORITIES.has(row.priority)) {
+      issues.push(`${row.reqId}: invalid priority "${row.priority}"`);
+    }
+    if (!VALID_STATUSES.has(row.status)) {
+      issues.push(`${row.reqId}: invalid status "${row.status}"`);
+    }
+    statusCounts[row.status] = (statusCounts[row.status] ?? 0) + 1;
+  }
+  const mustRows = rows.filter((row) => row.priority === "Must-have");
+  for (const row of mustRows) {
+    if (!hasLinkedEvidence(row.tests)) {
+      issues.push(`${row.reqId}: missing owning test IDs`);
+    }
+    if (!hasLinkedEvidence(row.criteria)) {
+      issues.push(`${row.reqId}: missing pass criteria`);
+    }
+  }
+  return { rows, mustRows, statusCounts, issues };
 }
 
 const matrixPath = "docs/acceptance-matrix.md";
