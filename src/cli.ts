@@ -49,10 +49,6 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
     const token = argv[i]!;
     if (!token.startsWith("-")) {
       positional.push(token);
-      if (normalizeCommand(token)) {
-        positional.push(...argv.slice(i + 1));
-        break;
-      }
       continue;
     }
 
