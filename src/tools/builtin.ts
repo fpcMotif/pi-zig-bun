@@ -1,5 +1,5 @@
-import { realpathSync, existsSync } from "node:fs";
-import { readFile, stat, mkdir, writeFile, open } from "node:fs/promises";
+import { readFile, stat, mkdir, writeFile, open, access, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import type { Capability, ToolResult } from "../permissions";
@@ -67,10 +67,18 @@ function ensurePathInsideWorkspace(workspaceRoot: string, resolvedPath: string):
   }
 }
 
-function findNearestExistingAncestor(targetPath: string): string | undefined {
+async function findNearestExistingAncestor(targetPath: string): Promise<string | undefined> {
   let currentPath = targetPath;
 
-  while (!existsSync(currentPath)) {
+  let exists = false;
+  while (!exists) {
+    try {
+      await access(currentPath, constants.F_OK);
+      exists = true;
+    } catch {
+      exists = false;
+    }
+    if (exists) break;
     const parentPath = path.dirname(currentPath);
     if (parentPath === currentPath) {
       return undefined;
@@ -81,14 +89,14 @@ function findNearestExistingAncestor(targetPath: string): string | undefined {
   return currentPath;
 }
 
-function ensureNoSymlinkEscape(workspaceRoot: string, resolvedPath: string): void {
-  const ancestor = findNearestExistingAncestor(resolvedPath);
+async function ensureNoSymlinkEscape(workspaceRoot: string, resolvedPath: string): Promise<void> {
+  const ancestor = await findNearestExistingAncestor(resolvedPath);
   if (!ancestor) {
     return;
   }
 
-  const realWorkspaceRoot = realpathSync(workspaceRoot);
-  const realAncestor = realpathSync(ancestor);
+  const realWorkspaceRoot = await realpath(workspaceRoot);
+  const realAncestor = await realpath(ancestor);
   const relativePath = path.relative(realWorkspaceRoot, realAncestor);
 
   if (path.isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith(`..${path.sep}`)) {
@@ -96,13 +104,13 @@ function ensureNoSymlinkEscape(workspaceRoot: string, resolvedPath: string): voi
   }
 }
 
-function resolveWorkspacePath(ctx: ToolExecutionContext, inputPath: unknown): ResolvedPathInput {
+async function resolveWorkspacePath(ctx: ToolExecutionContext, inputPath: unknown): Promise<ResolvedPathInput> {
   const workspaceRoot = path.resolve(ctx.cwd);
   const requestedPath = requireNonBlankString(inputPath, "path");
   const resolvedPath = path.resolve(workspaceRoot, requestedPath);
 
   ensurePathInsideWorkspace(workspaceRoot, resolvedPath);
-  ensureNoSymlinkEscape(workspaceRoot, resolvedPath);
+  await ensureNoSymlinkEscape(workspaceRoot, resolvedPath);
 
   return {
     resolvedPath,
@@ -117,32 +125,32 @@ function toPathCapabilityRequirements(
   return capabilities.map((capability) => ({ capability, target: capabilityTarget }));
 }
 
-function parseReadInput(ctx: ToolExecutionContext, input: ReadToolInput): ResolvedPathInput {
-  return resolveWorkspacePath(ctx, input.path);
+async function parseReadInput(ctx: ToolExecutionContext, input: ReadToolInput): Promise<ResolvedPathInput> {
+  return await resolveWorkspacePath(ctx, input.path);
 }
 
-function parseWriteInput(ctx: ToolExecutionContext, input: WriteToolInput): ParsedWriteInput {
+async function parseWriteInput(ctx: ToolExecutionContext, input: WriteToolInput): Promise<ParsedWriteInput> {
   return {
-    ...resolveWorkspacePath(ctx, input.path),
+    ...(await resolveWorkspacePath(ctx, input.path)),
     content: requireString(input.content, "content"),
     overwrite: input.overwrite === undefined ? true : requireBoolean(input.overwrite, "overwrite"),
   };
 }
 
-function parseEditInput(ctx: ToolExecutionContext, input: EditToolInput): ParsedEditInput {
+async function parseEditInput(ctx: ToolExecutionContext, input: EditToolInput): Promise<ParsedEditInput> {
   const from = requireString(input.from, "from");
   if (from.length === 0) {
     throw new Error("from must not be empty");
   }
 
   return {
-    ...resolveWorkspacePath(ctx, input.path),
+    ...(await resolveWorkspacePath(ctx, input.path)),
     from,
     to: requireString(input.to, "to"),
   };
 }
 
-function parseBashInput(input: BashToolInput): ParsedBashInput {
+async function parseBashInput(input: BashToolInput): Promise<ParsedBashInput> {
   return {
     command: requireNonBlankString(input.command, "command"),
     capabilityTarget: ".",
@@ -159,12 +167,12 @@ export const readTool: Tool<ReadToolInput, ToolResult> = {
   name: "read",
   description: "Read a UTF-8 text file from disk with hard read-size guard",
   capabilities: [...READ_CAPABILITIES],
-  resolveCapabilityTargets(ctx, input) {
-    const { capabilityTarget } = parseReadInput(ctx, input);
+  async resolveCapabilityTargets(ctx, input) {
+    const { capabilityTarget } = await parseReadInput(ctx, input);
     return toPathCapabilityRequirements(capabilityTarget, READ_CAPABILITIES);
   },
   async execute(ctx, input): Promise<ToolResult> {
-    const { resolvedPath, capabilityTarget } = parseReadInput(ctx, input);
+    const { resolvedPath, capabilityTarget } = await parseReadInput(ctx, input);
     ctx.capabilities.require("fs.read", capabilityTarget);
 
     const stats = await stat(resolvedPath);
@@ -191,12 +199,12 @@ export const writeTool: Tool<WriteToolInput, ToolResult> = {
   name: "write",
   description: "Create or overwrite a file",
   capabilities: [...WRITE_CAPABILITIES],
-  resolveCapabilityTargets(ctx, input) {
-    const { capabilityTarget } = parseWriteInput(ctx, input);
+  async resolveCapabilityTargets(ctx, input) {
+    const { capabilityTarget } = await parseWriteInput(ctx, input);
     return toPathCapabilityRequirements(capabilityTarget, WRITE_CAPABILITIES);
   },
   async execute(ctx, input): Promise<ToolResult> {
-    const { resolvedPath, capabilityTarget, content, overwrite } = parseWriteInput(ctx, input);
+    const { resolvedPath, capabilityTarget, content, overwrite } = await parseWriteInput(ctx, input);
     ctx.capabilities.require("fs.write", capabilityTarget);
 
     await mkdir(path.dirname(resolvedPath), { recursive: true });
@@ -231,12 +239,12 @@ export const editTool: Tool<EditToolInput, ToolResult> = {
   name: "edit",
   description: "Replace exact text range in a file",
   capabilities: [...EDIT_CAPABILITIES],
-  resolveCapabilityTargets(ctx, input) {
-    const { capabilityTarget } = parseEditInput(ctx, input);
+  async resolveCapabilityTargets(ctx, input) {
+    const { capabilityTarget } = await parseEditInput(ctx, input);
     return toPathCapabilityRequirements(capabilityTarget, EDIT_CAPABILITIES);
   },
   async execute(ctx, input): Promise<ToolResult> {
-    const { resolvedPath, capabilityTarget, from, to } = parseEditInput(ctx, input);
+    const { resolvedPath, capabilityTarget, from, to } = await parseEditInput(ctx, input);
     ctx.capabilities.require("fs.read", capabilityTarget);
     ctx.capabilities.require("fs.write", capabilityTarget);
 
@@ -271,12 +279,12 @@ export const bashTool: Tool<BashToolInput, ToolResult> = {
   name: "bash",
   description: "Execute a shell command in project root context",
   capabilities: [...BASH_CAPABILITIES],
-  resolveCapabilityTargets(_ctx, input) {
-    const { capabilityTarget } = parseBashInput(input);
+  async resolveCapabilityTargets(_ctx, input) {
+    const { capabilityTarget } = await parseBashInput(input);
     return toPathCapabilityRequirements(capabilityTarget, BASH_CAPABILITIES);
   },
   async execute(ctx, input): Promise<ToolResult> {
-    const { command, capabilityTarget } = parseBashInput(input);
+    const { command, capabilityTarget } = await parseBashInput(input);
 
     ctx.capabilities.require("fs.execute", capabilityTarget);
     const result = spawnSync("bash", ["-c", command], {
