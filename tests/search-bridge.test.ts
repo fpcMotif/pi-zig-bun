@@ -95,6 +95,39 @@ describe("SearchBridge protocol behavior", () => {
     }
   });
 
+  test("rejects pending calls immediately when process crashes mid-request", async () => {
+    const fixture = await createFakeBridgeBinary("timeout");
+    // Use a long timeout so we know the crash rejected it, not the timeout
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 5000 });
+
+    try {
+      // Start a request that will never get a response
+      const pendingCall = bridge.call("search.files", { query: "abc" });
+
+      // Wait a little bit to ensure the request is sent and pending
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // At this point, the process is spawned and waiting. We simulate a crash
+      // by killing the underlying process.
+      // @ts-ignore - access private field for testing
+      const proc = bridge.proc;
+      expect(proc).toBeDefined();
+      proc!.kill("SIGKILL");
+
+      // We expect the pending call to reject immediately because of the process exit,
+      // rather than waiting 5 seconds for the timeout.
+      const start = Date.now();
+      await expect(pendingCall).rejects.toThrow(/signal SIGKILL/);
+      const elapsed = Date.now() - start;
+
+      // It should resolve very quickly after kill, well before the 5000ms timeout
+      expect(elapsed).toBeLessThan(1000);
+    } finally {
+      await bridge.stop();
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   test("enforces single-flight by rejecting interrupted concurrent call", async () => {
     const fixture = await createFakeBridgeBinary("timeout");
     const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
