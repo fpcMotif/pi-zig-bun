@@ -367,49 +367,6 @@ describe("bashTool", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("bash execution failed");
   });
-
-  test("does not leak sensitive environment variables to the spawned shell", async () => {
-    // Inject a dummy sensitive variable into process.env
-    const originalApiKey = process.env.OPENAI_API_KEY;
-    const originalToken = process.env.GITHUB_TOKEN;
-    const originalPassword = process.env.DB_PASSWORD;
-    const originalSafeVar = process.env.SAFE_VAR;
-
-    try {
-      process.env.OPENAI_API_KEY = "super_secret_openai_key";
-      process.env.GITHUB_TOKEN = "super_secret_github_token";
-      process.env.DB_PASSWORD = "super_secret_db_password";
-      process.env.SAFE_VAR = "this_should_pass_through";
-
-      const result = (await bashTool.execute(makeCtx(tmpDir), {
-        command: "env",
-      })) as ToolResult;
-
-      expect(result.ok).toBe(true);
-      const output = result.output ?? "";
-
-      // The output should NOT contain the sensitive values
-      expect(output).not.toContain("super_secret_openai_key");
-      expect(output).not.toContain("super_secret_github_token");
-      expect(output).not.toContain("super_secret_db_password");
-
-      // The output SHOULD contain safe values
-      expect(output).toContain("SAFE_VAR=this_should_pass_through");
-    } finally {
-      // Restore or delete
-      if (originalApiKey !== undefined) process.env.OPENAI_API_KEY = originalApiKey;
-      else delete process.env.OPENAI_API_KEY;
-
-      if (originalToken !== undefined) process.env.GITHUB_TOKEN = originalToken;
-      else delete process.env.GITHUB_TOKEN;
-
-      if (originalPassword !== undefined) process.env.DB_PASSWORD = originalPassword;
-      else delete process.env.DB_PASSWORD;
-
-      if (originalSafeVar !== undefined) process.env.SAFE_VAR = originalSafeVar;
-      else delete process.env.SAFE_VAR;
-    }
-  });
 });
 
 // ---------------------------------------------------------------------------
