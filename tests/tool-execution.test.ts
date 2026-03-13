@@ -317,6 +317,22 @@ describe("bashTool", () => {
     expect(result.output!.trim()).toBe("hello");
   });
 
+  test("filters out sensitive environment variables", async () => {
+    process.env.TEST_API_KEY = "secret123";
+    process.env.SAFE_VAR = "public456";
+    const result = (await bashTool.execute(makeCtx(tmpDir), {
+      command: "env",
+    })) as ToolResult;
+
+    expect(result.ok).toBe(true);
+    expect(result.output).not.toContain("TEST_API_KEY");
+    expect(result.output).not.toContain("secret123");
+    expect(result.output).toContain("SAFE_VAR=public456");
+
+    delete process.env.TEST_API_KEY;
+    delete process.env.SAFE_VAR;
+  });
+
   test("executes within the context cwd", async () => {
     const result = (await bashTool.execute(makeCtx(tmpDir), {
       command: "pwd",
