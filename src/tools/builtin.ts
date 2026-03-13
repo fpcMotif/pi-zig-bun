@@ -321,11 +321,20 @@ export const bashTool: Tool<BashToolInput, ToolResult> = {
     const { command, capabilityTarget } = parseBashInput(input);
 
     ctx.capabilities.require("fs.execute", capabilityTarget);
+
+    const safeEnv = { ...process.env };
+    for (const key of Object.keys(safeEnv)) {
+      if (/(API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS)/i.test(key)) {
+        delete safeEnv[key];
+      }
+    }
+
     const result = spawnSync("bash", ["-c", command], {
       cwd: ctx.cwd,
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
+      env: safeEnv,
       timeout: 120_000,
       maxBuffer: 1024 * 1024 * 5,
     });
