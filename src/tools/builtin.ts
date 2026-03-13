@@ -98,12 +98,19 @@ async function ensureNoSymlinkEscape(workspaceRoot: string, resolvedPath: string
   }
 }
 
+const READ_CAPABILITIES: Capability[] = ["fs.read"];
+const WRITE_CAPABILITIES: Capability[] = ["fs.write"];
+const EDIT_CAPABILITIES: Capability[] = ["fs.read", "fs.write"];
+const BASH_CAPABILITIES: Capability[] = ["fs.execute"];
+
 // Open the file first, then verify the opened inode still matches the resolved
 // path so symlink swaps between check and use are rejected.
 async function acquireSafeFileHandle(
+  ctx: ToolExecutionContext,
   workspaceRoot: string,
   resolvedPath: string,
   flags: string,
+  capabilities: readonly Capability[],
 ): Promise<OpenFileHandle> {
   const fileHandle = await open(resolvedPath, flags);
 
@@ -120,6 +127,12 @@ async function acquireSafeFileHandle(
     }
 
     ensurePathInsideWorkspace(realWorkspaceRoot, realResolvedPath);
+
+    const realCapabilityTarget = toCapabilityTarget(realWorkspaceRoot, realResolvedPath);
+    for (const cap of capabilities) {
+      ctx.capabilities.require(cap, realCapabilityTarget);
+    }
+
     return fileHandle;
   } catch (error) {
     await fileHandle.close();
@@ -179,10 +192,7 @@ function parseBashInput(input: BashToolInput): ParsedBashInput {
   };
 }
 
-const READ_CAPABILITIES: Capability[] = ["fs.read"];
-const WRITE_CAPABILITIES: Capability[] = ["fs.write"];
-const EDIT_CAPABILITIES: Capability[] = ["fs.read", "fs.write"];
-const BASH_CAPABILITIES: Capability[] = ["fs.execute"];
+
 
 export const readTool: Tool<ReadToolInput, ToolResult> = {
   id: "read",
@@ -194,11 +204,9 @@ export const readTool: Tool<ReadToolInput, ToolResult> = {
     return toPathCapabilityRequirements(capabilityTarget, READ_CAPABILITIES);
   },
   async execute(ctx, input): Promise<ToolResult> {
-    const { resolvedPath, capabilityTarget } = parseReadInput(ctx, input);
+    const { resolvedPath } = parseReadInput(ctx, input);
     await ensureNoSymlinkEscape(path.resolve(ctx.cwd), resolvedPath);
-    ctx.capabilities.require("fs.read", capabilityTarget);
-
-    const fileHandle = await acquireSafeFileHandle(path.resolve(ctx.cwd), resolvedPath, "r");
+    const fileHandle = await acquireSafeFileHandle(ctx, path.resolve(ctx.cwd), resolvedPath, "r", READ_CAPABILITIES);
     try {
       const stats = await fileHandle.stat();
       if (stats.size > MAX_READ_BYTES) {
@@ -232,19 +240,22 @@ export const writeTool: Tool<WriteToolInput, ToolResult> = {
     return toPathCapabilityRequirements(capabilityTarget, WRITE_CAPABILITIES);
   },
   async execute(ctx, input): Promise<ToolResult> {
-    const { resolvedPath, capabilityTarget, content, overwrite } = parseWriteInput(ctx, input);
+    const { resolvedPath, content, overwrite } = parseWriteInput(ctx, input);
     await ensureNoSymlinkEscape(path.resolve(ctx.cwd), resolvedPath);
-    ctx.capabilities.require("fs.write", capabilityTarget);
-
     await mkdir(path.dirname(resolvedPath), { recursive: true });
 
     let fileHandle: OpenFileHandle | undefined;
     try {
       fileHandle = await acquireSafeFileHandle(
+        ctx,
         path.resolve(ctx.cwd),
         resolvedPath,
-        overwrite ? "w" : "wx",
+        overwrite ? "a+" : "wx",
+        WRITE_CAPABILITIES
       );
+      if (overwrite) {
+        await fileHandle.truncate(0);
+      }
       await fileHandle.writeFile(content);
     } catch (error) {
       const fileError = error as NodeJS.ErrnoException;
@@ -277,12 +288,9 @@ export const editTool: Tool<EditToolInput, ToolResult> = {
     return toPathCapabilityRequirements(capabilityTarget, EDIT_CAPABILITIES);
   },
   async execute(ctx, input): Promise<ToolResult> {
-    const { resolvedPath, capabilityTarget, from, to } = parseEditInput(ctx, input);
+    const { resolvedPath, from, to } = parseEditInput(ctx, input);
     await ensureNoSymlinkEscape(path.resolve(ctx.cwd), resolvedPath);
-    ctx.capabilities.require("fs.read", capabilityTarget);
-    ctx.capabilities.require("fs.write", capabilityTarget);
-
-    const fileHandle = await acquireSafeFileHandle(path.resolve(ctx.cwd), resolvedPath, "r+");
+    const fileHandle = await acquireSafeFileHandle(ctx, path.resolve(ctx.cwd), resolvedPath, "r+", EDIT_CAPABILITIES);
 
     try {
       const payload = await fileHandle.readFile("utf8");
