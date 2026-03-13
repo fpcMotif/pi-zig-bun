@@ -171,7 +171,21 @@ export class OpenAIAdapter extends BaseSseAgent {
   }
 
   protected parseChunk(payload: unknown) {
-    const data = payload as Record<string, any>;
+    const data = payload as {
+      choices?: Array<{
+        delta?: {
+          content?: string;
+          tool_calls?: Array<{
+            id: string;
+            function?: {
+              name?: string;
+              arguments?: string;
+            };
+          }>;
+        };
+        finish_reason?: string | null;
+      }>;
+    };
     const choice = data?.choices?.[0];
     const delta = choice?.delta;
     const token = typeof delta?.content === "string" ? delta.content : undefined;
@@ -207,7 +221,19 @@ export class AnthropicAdapter extends BaseSseAgent {
   }
 
   protected parseChunk(payload: unknown) {
-    const data = payload as Record<string, any>;
+    const data = payload as {
+      type?: string;
+      delta?: {
+        type?: string;
+        text?: string;
+      };
+      content_block?: {
+        type?: string;
+        id: string;
+        name?: string;
+        input?: unknown;
+      };
+    };
     if (data?.type === "content_block_delta" && data?.delta?.type === "text_delta") {
       return { token: data.delta.text };
     }
