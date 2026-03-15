@@ -321,7 +321,7 @@ describe("bashTool", () => {
     process.env.TEST_API_KEY = "secret123";
     process.env.SAFE_VAR = "public456";
     const result = (await bashTool.execute(makeCtx(tmpDir), {
-      command: "env",
+      command: "if [[ -n ${TEST_API_KEY-} ]]; then printf 'TEST_API_KEY=%s\\n' \"$TEST_API_KEY\"; fi; if [[ -n ${SAFE_VAR-} ]]; then printf 'SAFE_VAR=%s\\n' \"$SAFE_VAR\"; fi",
     })) as ToolResult;
 
     expect(result.ok).toBe(true);
@@ -356,7 +356,7 @@ describe("bashTool", () => {
 
   test("prevents excessive bash output from exhausting memory", async () => {
     const result = (await bashTool.execute(makeCtx(tmpDir), {
-      command: "yes | head -n 3000000",
+      command: "for ((i=0;i<200000;i++)); do printf '0123456789012345678901234567890123456789\\n'; done",
     })) as ToolResult;
 
     expect(result.ok).toBe(false);

@@ -30,6 +30,9 @@ try {
   const samples: number[] = [];
   for (let i = 0; i < iterations; i += 1) {
     const res = await client.searchFiles("search", { cwd: root, limit: 5, includeScores: true });
+    if (!Number.isFinite(res.elapsedMs)) {
+      throw new Error("searchFiles() returned an invalid elapsedMs value");
+    }
     samples.push(res.elapsedMs);
   }
 

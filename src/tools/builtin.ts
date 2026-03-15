@@ -183,6 +183,7 @@ const READ_CAPABILITIES: Capability[] = ["fs.read"];
 const WRITE_CAPABILITIES: Capability[] = ["fs.write"];
 const EDIT_CAPABILITIES: Capability[] = ["fs.read", "fs.write"];
 const BASH_CAPABILITIES: Capability[] = ["fs.execute"];
+const BASH_EXECUTABLE = process.platform === "win32" ? "bash" : "/bin/bash";
 
 export const readTool: Tool<ReadToolInput, ToolResult> = {
   id: "read",
@@ -329,7 +330,7 @@ export const bashTool: Tool<BashToolInput, ToolResult> = {
       }
     }
 
-    const result = spawnSync("bash", ["-c", command], {
+    const result = spawnSync(BASH_EXECUTABLE, ["-c", command], {
       cwd: ctx.cwd,
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
