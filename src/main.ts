@@ -172,18 +172,26 @@ async function executeToolCall(
   }
 }
 
+interface StreamAgentTurnOptions {
+  agent: ReturnType<typeof createAgentFromEnv>;
+  messages: AgentMessage[];
+  runtime: AppRuntime;
+  currentTurn: string;
+  tui: TuiRenderer;
+}
+
 /**
  * Stream one agent turn, collecting text and tool calls.
  * Renders output through the TuiRenderer for styled terminal display.
  * Returns the final AgentResponse (which includes any tool_calls the agent made).
  */
-async function streamAgentTurn(
-  agent: ReturnType<typeof createAgentFromEnv>,
-  messages: AgentMessage[],
-  runtime: AppRuntime,
-  currentTurn: string,
-  tui: TuiRenderer,
-): Promise<{ text: string; toolCalls: AgentToolCall[]; hadError: boolean }> {
+async function streamAgentTurn({
+  agent,
+  messages,
+  runtime,
+  currentTurn,
+  tui,
+}: StreamAgentTurnOptions): Promise<{ text: string; toolCalls: AgentToolCall[]; hadError: boolean }> {
   const stream = await agent.stream({ messages });
 
   let text = "";
@@ -359,7 +367,7 @@ async function runInteractive(
         tui.writeAssistantPrefix();
       }
 
-      const turn = await streamAgentTurn(agent, messages, runtime, currentTurn, tui);
+      const turn = await streamAgentTurn({ agent, messages, runtime, currentTurn, tui });
 
       if (turn.hadError) {
         lastText = turn.text;
