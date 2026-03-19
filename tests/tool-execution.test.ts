@@ -1,5 +1,6 @@
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { mkdtemp, rm, writeFile, readFile, mkdir, symlink } from "node:fs/promises";
+import { describe, expect, test, beforeEach, afterEach, spyOn } from "bun:test";
+import * as fsPromises from "node:fs/promises";
+const { mkdtemp, rm, writeFile, readFile, mkdir, symlink } = fsPromises;
 import path from "node:path";
 import os from "node:os";
 import { readTool, writeTool, editTool, bashTool } from "../src/tools/builtin";
@@ -194,6 +195,47 @@ describe("writeTool", () => {
     ).rejects.toThrow("Path traversal detected (symlink escape)");
 
     await rm(escapedWorkspace, { recursive: true, force: true });
+  });
+
+  test("handles EEXIST specifically when overwrite is false", async () => {
+    const openSpy = spyOn(fsPromises, "open").mockImplementation(async () => {
+      const err = new Error("EEXIST: file already exists") as any;
+      err.code = "EEXIST";
+      throw err;
+    });
+
+    try {
+      const result = (await writeTool.execute(makeCtx(tmpDir), {
+        path: path.join(tmpDir, "mocked.txt"),
+        content: "content",
+        overwrite: false,
+      })) as ToolResult;
+
+      expect(result.ok).toBe(false);
+      expect(result.error).toBe("file already exists");
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
+  test("rethrows other errors during open even when overwrite is false", async () => {
+    const openSpy = spyOn(fsPromises, "open").mockImplementation(async () => {
+      const err = new Error("EACCES: permission denied") as any;
+      err.code = "EACCES";
+      throw err;
+    });
+
+    try {
+      await expect(
+        writeTool.execute(makeCtx(tmpDir), {
+          path: path.join(tmpDir, "mocked.txt"),
+          content: "content",
+          overwrite: false,
+        }),
+      ).rejects.toThrow("EACCES");
+    } finally {
+      openSpy.mockRestore();
+    }
   });
 });
 
