@@ -151,7 +151,15 @@ async function executeToolCall(
   capabilities: CapabilityManager,
   cwd: string,
   toolCall: AgentToolCall,
+  toolExecutionEnabled: boolean,
 ): Promise<string> {
+  if (!toolExecutionEnabled) {
+    return JSON.stringify({
+      ok: false,
+      error: "Tool execution is disabled until an explicit .pi/policy.json is configured.",
+    });
+  }
+
   let parsedArgs: unknown;
   try {
     parsedArgs = JSON.parse(toolCall.arguments);
@@ -271,6 +279,7 @@ async function runInteractive(
   runtime: AppRuntime,
   registry: MemoryToolRegistry,
   capabilities: CapabilityManager,
+  toolExecutionEnabled: boolean,
   json: boolean,
 ): Promise<void> {
   const tui = new TuiRenderer();
@@ -384,7 +393,13 @@ async function runInteractive(
         usedToolCallIds.add(toolCallId);
 
         tui.writeToolExecution(tc.name);
-        const resultContent = await executeToolCall(registry, capabilities, cwd, tc);
+        const resultContent = await executeToolCall(
+          registry,
+          capabilities,
+          cwd,
+          tc,
+          toolExecutionEnabled,
+        );
         tui.writeToolExecutionDone();
 
         const toolResultMsg = buildToolResultMessage(toolCallId, resultContent);
@@ -439,11 +454,7 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
     hasExplicitPolicy
       ? policy
       : {
-          "fs.read": "*",
-          "fs.write": "*",
-          "fs.execute": "*",
           "session.access": "*",
-          "net.http": "*",
         },
   );
 
@@ -488,7 +499,7 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
         return runLoginCommand(args.json);
       case "interactive":
       default: {
-        await runInteractive(runtime, registry, capabilities, args.json);
+        await runInteractive(runtime, registry, capabilities, hasExplicitPolicy, args.json);
         return 0;
       }
     }
