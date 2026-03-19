@@ -2,6 +2,7 @@ import type { UiAck, UiInputParams, UiUpdateParams } from "../rpc/types";
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 type RpcId = number;
 
@@ -74,20 +75,11 @@ export class SearchBridge {
     }
 
     const binaryName = process.platform === "win32" ? "pi-zig-search.exe" : "pi-zig-search";
-    const candidates = [
-      path.join(this.workspaceRoot, "zig-out", "bin", binaryName),
-      path.join(process.cwd(), "zig-out", "bin", binaryName),
-      path.join(process.cwd(), ".zig-cache", "o", "bin", binaryName),
-    ];
+    const bridgeDir = path.dirname(fileURLToPath(import.meta.url));
 
-    for (const candidate of candidates) {
-      if (existsSync(candidate)) {
-        return candidate;
-      }
-    }
-
-    // keep last candidate for nicer errors while still allowing explicit override.
-    return candidates[0]!;
+    // Restrict implicit resolution to the binary built alongside this package.
+    // Never auto-discover workspace-relative paths, which could execute planted binaries.
+    return path.resolve(bridgeDir, "..", "..", "zig-out", "bin", binaryName);
   }
 
   public async start(): Promise<void> {
