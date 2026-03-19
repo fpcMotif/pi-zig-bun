@@ -1343,3 +1343,95 @@ test "json-rpc contract handles ping and unknown methods" {
     try std.testing.expect(mem.indexOf(u8, output, "\"result\":\"pong\"") != null);
     try std.testing.expect(mem.indexOf(u8, output, "\"code\":-32601") != null);
 }
+test "index file parsing fails on invalid magic" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const allocator = std.testing.allocator;
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    var state = SearchState.init(allocator);
+    defer state.deinit();
+
+    state.cache_dir = try allocator.dupe(u8, root);
+
+    var file = try tmp.dir.createFile("index.bin", .{});
+
+    var buf: [4096]u8 = undefined;
+    var wr = file.writer(&buf);
+    const writer = &wr.interface;
+
+    try writer.writeInt(u32, 0x12345678, .little);
+    try writer.writeInt(u32, index_version, .little);
+    try writer.writeInt(u64, hashWorkspace(root), .little);
+    try writer.writeInt(u32, 0, .little);
+    try writer.flush();
+
+    file.close();
+
+    const loaded = try state.loadIndexFromDisk(root);
+    try std.testing.expect(!loaded);
+}
+
+test "index file parsing fails on invalid version" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const allocator = std.testing.allocator;
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    var state = SearchState.init(allocator);
+    defer state.deinit();
+
+    state.cache_dir = try allocator.dupe(u8, root);
+
+    var file = try tmp.dir.createFile("index.bin", .{});
+
+    var buf: [4096]u8 = undefined;
+    var wr = file.writer(&buf);
+    const writer = &wr.interface;
+
+    try writer.writeInt(u32, index_magic, .little);
+    try writer.writeInt(u32, index_version + 1, .little); // Bad version
+    try writer.writeInt(u64, hashWorkspace(root), .little);
+    try writer.writeInt(u32, 0, .little);
+    try writer.flush();
+
+    file.close();
+
+    const loaded = try state.loadIndexFromDisk(root);
+    try std.testing.expect(!loaded);
+}
+
+test "index file parsing fails on root hash mismatch" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const allocator = std.testing.allocator;
+    const root = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(root);
+
+    var state = SearchState.init(allocator);
+    defer state.deinit();
+
+    state.cache_dir = try allocator.dupe(u8, root);
+
+    var file = try tmp.dir.createFile("index.bin", .{});
+
+    var buf: [4096]u8 = undefined;
+    var wr = file.writer(&buf);
+    const writer = &wr.interface;
+
+    try writer.writeInt(u32, index_magic, .little);
+    try writer.writeInt(u32, index_version, .little);
+    try writer.writeInt(u64, hashWorkspace(root) + 1, .little); // Bad root hash
+    try writer.writeInt(u32, 0, .little);
+    try writer.flush();
+
+    file.close();
+
+    const loaded = try state.loadIndexFromDisk(root);
+    try std.testing.expect(!loaded);
+}
