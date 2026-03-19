@@ -2,7 +2,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { computeStats, fmtMs, markdownTable } from "./lib";
+import { computeStats, fmtMs, markdownTable } from "../tests/perf/lib";
 
 interface MetricSummary {
   metric: string;
