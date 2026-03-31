@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { readFile, stat, mkdir, writeFile, open, realpath, access } from "node:fs/promises";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import type { Capability, ToolResult } from "../permissions";
 import type { Tool, ToolCapabilityRequirement, ToolExecutionContext } from "./types";
 
@@ -321,13 +321,93 @@ export const bashTool: Tool<BashToolInput, ToolResult> = {
     const { command, capabilityTarget } = parseBashInput(input);
 
     ctx.capabilities.require("fs.execute", capabilityTarget);
-    const result = spawnSync("bash", ["-c", command], {
-      cwd: ctx.cwd,
-      encoding: "utf8",
-      stdio: ["pipe", "pipe", "pipe"],
-      shell: false,
-      timeout: 120_000,
-      maxBuffer: 1024 * 1024 * 5,
+
+    const maxBuffer = 1024 * 1024 * 5;
+    const timeoutDuration = 120_000;
+
+    const result = await new Promise<{
+      error?: Error;
+      status: number | null;
+      signal: string | null;
+      stdout: string;
+      stderr: string;
+    }>((resolve) => {
+      let stdout = "";
+      let stderr = "";
+      let totalBytes = 0;
+      let timeoutId: NodeJS.Timeout;
+      let isDone = false;
+      let bufferExceeded = false;
+
+      const proc = spawn("bash", ["-c", command], {
+        cwd: ctx.cwd,
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: false,
+      });
+
+      proc.stdout.setEncoding("utf8");
+      proc.stderr.setEncoding("utf8");
+
+      const onDone = (res: { error?: Error; status: number | null; signal: string | null; stdout: string; stderr: string }) => {
+        if (isDone) return;
+        isDone = true;
+        clearTimeout(timeoutId);
+        resolve(res);
+      };
+
+      proc.stdout.on("data", (chunk: string) => {
+        stdout += chunk;
+        totalBytes += Buffer.byteLength(chunk, "utf8");
+        if (!bufferExceeded && totalBytes > maxBuffer) {
+          bufferExceeded = true;
+          proc.kill("SIGKILL");
+          onDone({
+            error: new Error(`stdout maxBuffer length exceeded`),
+            status: null,
+            signal: "SIGKILL",
+            stdout,
+            stderr,
+          });
+        }
+      });
+
+      proc.stderr.on("data", (chunk: string) => {
+        stderr += chunk;
+        totalBytes += Buffer.byteLength(chunk, "utf8");
+        if (!bufferExceeded && totalBytes > maxBuffer) {
+          bufferExceeded = true;
+          proc.kill("SIGKILL");
+          onDone({
+            error: new Error(`stderr maxBuffer length exceeded`),
+            status: null,
+            signal: "SIGKILL",
+            stdout,
+            stderr,
+          });
+        }
+      });
+
+      proc.on("error", (error) => {
+        if (bufferExceeded) return;
+        onDone({ error, status: null, signal: null, stdout, stderr });
+      });
+
+      proc.on("close", (status, signal) => {
+        if (bufferExceeded) return;
+        onDone({ status, signal, stdout, stderr });
+      });
+
+      timeoutId = setTimeout(() => {
+        if (bufferExceeded || isDone) return;
+        proc.kill("SIGKILL");
+        onDone({
+          error: new Error("bash execution timed out"),
+          status: null,
+          signal: "SIGKILL",
+          stdout,
+          stderr,
+        });
+      }, timeoutDuration);
     });
 
     if (result.error) {
