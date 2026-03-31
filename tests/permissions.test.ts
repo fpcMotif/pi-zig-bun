@@ -5,6 +5,16 @@ import path from "node:path";
 import { CapabilityManager, loadPolicyFile } from "../src/permissions";
 
 describe("CapabilityManager glob and transitions", () => {
+  test("denies access when capability is initialized with an empty glob array or undefined", () => {
+    const manager = new CapabilityManager({
+      "fs.read": [],
+      "fs.write": undefined
+    });
+
+    expect(manager.can("fs.read", "src/main.ts")).toBe(false);
+    expect(manager.can("fs.write", "tmp/out.txt")).toBe(false);
+  });
+
   test("supports single-star and double-star semantics", () => {
     const manager = new CapabilityManager({
       "fs.read": ["src/*.ts", "tests/**"],
