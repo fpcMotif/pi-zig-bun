@@ -65,6 +65,7 @@ function validateCapabilityRequirements(
 }
 
 export class MemoryToolRegistry implements ToolRegistry {
+  // Stores tools securely using unknown generic arguments instead of any
   private tools = new Map<string, Tool<unknown, unknown>>();
 
   public register(tool: Tool): void {
