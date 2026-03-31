@@ -2,7 +2,47 @@
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { computeStats, fmtMs, markdownTable } from "./lib";
+
+export function computeStats(values: number[]): { p50: number | null, p95: number | null } {
+  if (values.length === 0) return { p50: null, p95: null };
+  const sorted = [...values].sort((a, b) => a - b);
+  const p50 = sorted[Math.floor(sorted.length * 0.5)] ?? null;
+  const p95 = sorted[Math.floor(sorted.length * 0.95)] ?? null;
+  return { p50, p95 };
+}
+
+export function fmtMs(ms: number | null): string {
+  if (ms === null) return "N/A";
+  return `${ms.toFixed(2)}ms`;
+}
+
+export function markdownTable(headers: string[], rows: (string | null)[][]): string {
+  if (rows.length === 0) return "";
+
+  const colWidths = headers.map((h, i) => {
+    let max = h.length;
+    for (const row of rows) {
+      if (row[i] && row[i]!.length > max) {
+        max = row[i]!.length;
+      }
+    }
+    return max;
+  });
+
+  const separator = colWidths.map(w => "-".repeat(w)).join(" | ");
+
+  const headerStr = headers.map((h, i) => h.padEnd(colWidths[i] ?? 0)).join(" | ");
+  const headerRow = `| ${headerStr} |`;
+  const sepRow = `| ${separator} |`;
+
+  const rowStrs = rows.map(row => {
+    const r = row.map((cell, i) => (cell || "").padEnd(colWidths[i] ?? 0)).join(" | ");
+    return `| ${r} |`;
+  });
+
+  return [headerRow, sepRow, ...rowStrs].join("\n");
+}
+
 
 interface MetricSummary {
   metric: string;
