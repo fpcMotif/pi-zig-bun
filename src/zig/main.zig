@@ -740,10 +740,35 @@ fn containsCaseInsensitive(haystack: []const u8, needle: []const u8) bool {
     if (needle.len == 0) return true;
     if (needle.len > haystack.len) return false;
 
+    const first_char = needle[0];
+    const first_char_upper = std.ascii.toUpper(first_char);
+
     var i: usize = 0;
-    while (i + needle.len <= haystack.len) : (i += 1) {
+    while (i + needle.len <= haystack.len) {
+        const rest = haystack[i..];
+        var match_idx: usize = 0;
+
+        if (first_char == first_char_upper) {
+            if (std.mem.indexOfScalar(u8, rest, first_char)) |idx| {
+                match_idx = idx;
+            } else {
+                return false;
+            }
+        } else {
+            const idx1 = std.mem.indexOfAny(u8, rest, &[_]u8{first_char, first_char_upper});
+            if (idx1) |idx| {
+                match_idx = idx;
+            } else {
+                return false;
+            }
+        }
+
+        i += match_idx;
+
+        if (i + needle.len > haystack.len) return false;
+
         var match = true;
-        var j: usize = 0;
+        var j: usize = 1;
         while (j < needle.len) : (j += 1) {
             if (std.ascii.toLower(haystack[i + j]) != needle[j]) {
                 match = false;
@@ -752,6 +777,7 @@ fn containsCaseInsensitive(haystack: []const u8, needle: []const u8) bool {
         }
 
         if (match) return true;
+        i += 1;
     }
 
     return false;

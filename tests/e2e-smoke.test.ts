@@ -13,30 +13,20 @@ async function makeWorkspace() {
   await writeFile(binaryPath, `#!/usr/bin/env node
 let raw = "";
 process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => { raw += chunk; });
-process.stdin.on("end", () => {
-  const req = JSON.parse(raw.trim());
-  const method = req.method;
-  const params = req.params ?? {};
-  let result;
-  if (method === "search.init") result = { ok: true };
-  else if (method === "search.files") result = {
-    query: params.query,
-    total: 1,
-    offset: params.offset ?? 0,
-    limit: params.limit ?? 50,
-    elapsedMs: 1,
-    results: [{ path: "src/main.ts", score: 99, matchType: "exact", rank: 1 }],
-  };
-  else if (method === "search.grep") result = {
-    query: params.query,
-    total: 1,
-    elapsedMs: 1,
-    limit: params.limit ?? 100,
-    matches: [{ path: "src/main.ts", line: 7, column: 0, score: 1, text: "needle line" }],
-  };
-  else result = { ok: true };
-  process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: req.id, result }) + "\\n");
+process.stdin.on("data", (chunk) => {
+  const reqs = chunk.toString().trim().split("\\n");
+  for (const reqStr of reqs) {
+    if (!reqStr) continue;
+    const req = JSON.parse(reqStr);
+    const method = req.method;
+    const params = req.params ?? {};
+    let result;
+    if (method === "search.init") result = { ok: true, defaults: {} };
+    else if (method === "search.files") result = { query: params.query, total: 1, offset: params.offset ?? 0, limit: params.limit ?? 50, elapsedMs: 1, results: [{ path: "src/main.ts", score: 99, matchType: "exact", rank: 1 }] };
+    else if (method === "search.grep") result = { query: params.query, total: 1, elapsedMs: 1, limit: params.limit ?? 100, matches: [{ path: "src/main.ts", line: 7, column: 0, score: 1, text: "needle line" }] };
+    else result = { ok: true };
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: req.id, result }) + "\\n");
+  }
 });
 `);
   await chmod(binaryPath, 0o755);
