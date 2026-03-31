@@ -34,9 +34,86 @@ function isCommandToken(token: string | undefined): boolean {
   return normalizeCommand(token) !== undefined;
 }
 
+interface ParseState {
+  queryFromFlag: string | undefined;
+}
+
+type FlagHandler = (argv: string[], i: number, options: ParsedCli, state: ParseState, token: string) => number;
+
+const flagHandlers: Record<string, FlagHandler> = {
+  "-h": parseHelpFlag,
+  "--help": parseHelpFlag,
+  "-j": parseJsonFlag,
+  "--json": parseJsonFlag,
+  "-p": parsePrintFlag,
+  "--print": parsePrintFlag,
+  "-c": parseCwdFlag,
+  "--cwd": parseCwdFlag,
+  "-l": parseLimitFlag,
+  "--limit": parseLimitFlag,
+  "-r": parseRootSessionFlag,
+  "--root-session": parseRootSessionFlag,
+};
+
+function parseHelpFlag(_argv: string[], _i: number, options: ParsedCli): number {
+  options.help = true;
+  return 1;
+}
+
+function parseJsonFlag(argv: string[], i: number, options: ParsedCli, state: ParseState): number {
+  options.json = true;
+  const next = argv[i + 1];
+  if (
+    next !== undefined
+    && !next.startsWith("-")
+    && state.queryFromFlag === undefined
+    && !isCommandToken(next)
+  ) {
+    state.queryFromFlag = next;
+    return 2;
+  }
+  return 1;
+}
+
+function parsePrintFlag(argv: string[], i: number, _options: ParsedCli, state: ParseState, token: string): number {
+  const next = argv[i + 1];
+  if (next === undefined) {
+    throw new Error(`Missing value for ${token}`);
+  }
+  state.queryFromFlag = next;
+  return 2;
+}
+
+function parseCwdFlag(argv: string[], i: number, options: ParsedCli, _state: ParseState, token: string): number {
+  if (argv[i + 1] === undefined) {
+    throw new Error(`Missing value for ${token}`);
+  }
+  options.cwd = argv[i + 1]!;
+  return 2;
+}
+
+function parseLimitFlag(argv: string[], i: number, options: ParsedCli, _state: ParseState, token: string): number {
+  if (argv[i + 1] === undefined) {
+    throw new Error(`Missing value for ${token}`);
+  }
+  options.limit = Number.parseInt(argv[i + 1]!, 10);
+  if (!Number.isFinite(options.limit) || options.limit <= 0) {
+    options.limit = 50;
+  }
+  return 2;
+}
+
+function parseRootSessionFlag(argv: string[], i: number, options: ParsedCli, _state: ParseState, token: string): number {
+  if (argv[i + 1] === undefined) {
+    throw new Error(`Missing value for ${token}`);
+  }
+  options.rootSession = argv[i + 1]!;
+  return 2;
+}
+
 export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
   let command: ParsedCli["command"];
-  let queryFromFlag: string | undefined;
+  const state: ParseState = { queryFromFlag: undefined };
   const positional: string[] = [];
   const options: ParsedCli = {
     json: false,
@@ -45,7 +122,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
     help: false,
   };
 
-  for (let i = 0; i < argv.length; i += 1) {
+  for (let i = 0; i < argv.length;) {
     const token = argv[i]!;
 
     // If we found a command that takes a raw query string, slurp everything else.
@@ -60,74 +137,24 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
         }
         break;
       }
+      i += 1;
       continue;
     }
 
     if (!token.startsWith("-")) {
       positional.push(token);
+      i += 1;
       continue;
     }
 
-    switch (token) {
-      case "-h":
-      case "--help":
-        options.help = true;
-        continue;
-      case "-j":
-      case "--json": {
-        options.json = true;
-        const next = argv[i + 1];
-        if (
-          next !== undefined
-          && !next.startsWith("-")
-          && queryFromFlag === undefined
-          && !isCommandToken(next)
-        ) {
-          queryFromFlag = next;
-          i += 1;
-        }
-        continue;
-      }
-      case "-p":
-      case "--print": {
-        const next = argv[i + 1];
-        if (next === undefined) {
-          throw new Error(`Missing value for ${token}`);
-        }
-        queryFromFlag = next;
-        i += 1;
-        continue;
-      }
-      case "-c":
-      case "--cwd":
-        if (argv[i + 1] === undefined) {
-          throw new Error(`Missing value for ${token}`);
-        }
-        options.cwd = argv[i + 1]!;
-        i += 1;
-        continue;
-      case "-l":
-      case "--limit":
-        if (argv[i + 1] === undefined) {
-          throw new Error(`Missing value for ${token}`);
-        }
-        options.limit = Number.parseInt(argv[i + 1]!, 10);
-        if (!Number.isFinite(options.limit) || options.limit <= 0) {
-          options.limit = 50;
-        }
-        i += 1;
-        continue;
-      case "-r":
-      case "--root-session":
-        if (argv[i + 1] === undefined) {
-          throw new Error(`Missing value for ${token}`);
-        }
-        options.rootSession = argv[i + 1]!;
-        i += 1;
-        continue;
-      default:
-        throw new Error(`Unknown flag: ${token}`);
+    const handler = flagHandlers[token];
+    if (handler) {
+      const consumed = handler(argv, i, options, state, token);
+      i += consumed;
+      continue;
     }
+
+    throw new Error(`Unknown flag: ${token}`);
   }
 
   if (options.help) {
@@ -140,7 +167,7 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
   }
 
   if (command) {
-    if (queryFromFlag !== undefined) {
+    if (state.queryFromFlag !== undefined) {
       throw new Error("Cannot combine one-shot query flags with explicit command");
     }
     options.command = command;
@@ -148,9 +175,9 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
     return options;
   }
 
-  if (queryFromFlag !== undefined) {
+  if (state.queryFromFlag !== undefined) {
     options.command = "search";
-    options.query = queryFromFlag;
+    options.query = state.queryFromFlag;
     return options;
   }
 
