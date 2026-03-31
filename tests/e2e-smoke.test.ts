@@ -11,28 +11,31 @@ async function makeWorkspace() {
 
   const binaryPath = path.join(binDir, "pi-zig-search");
   await writeFile(binaryPath, `#!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import readline from "node:readline";
 const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
 rl.on("line", (line) => {
   const req = JSON.parse(line);
   const method = req.method;
   const params = req.params ?? {};
+  const requestedCwd = typeof params.cwd === "string" ? realpathSync(params.cwd) : realpathSync(process.cwd());
+  const inWorkspace = requestedCwd === realpathSync(process.cwd());
   let result;
-  if (method === "search.init") result = { ok: true };
+  if (method === "search.init") result = { ok: true, elapsed_ms: 1 };
   else if (method === "search.files") result = {
     query: params.query,
-    total: 1,
+    total: inWorkspace ? 1 : 0,
     offset: params.offset ?? 0,
     limit: params.limit ?? 50,
-    elapsedMs: 1,
-    results: [{ path: "src/main.ts", score: 99, matchType: "exact", rank: 1 }],
+    elapsed_ms: 1,
+    results: inWorkspace ? [{ path: "src/main.ts", score: 99, match_type: "exact", rank: 1 }] : [],
   };
   else if (method === "search.grep") result = {
     query: params.query,
-    total: 1,
-    elapsedMs: 1,
+    total: inWorkspace ? 1 : 0,
+    elapsed_ms: 1,
     limit: params.limit ?? 100,
-    matches: [{ path: "src/main.ts", line: 7, column: 0, score: 1, text: "needle line" }],
+    matches: inWorkspace ? [{ path: "src/main.ts", line: 7, column: 0, score: 1, text: "needle line" }] : [],
   };
   else result = { ok: true };
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: req.id, result }) + "\\n");

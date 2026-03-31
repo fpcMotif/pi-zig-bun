@@ -1,5 +1,5 @@
-import { realpathSync, existsSync } from "node:fs";
-import { readFile, stat, mkdir, writeFile, open } from "node:fs/promises";
+import { constants } from "node:fs";
+import { readFile, stat, mkdir, writeFile, open, realpath, access } from "node:fs/promises";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import type { Capability, ToolResult } from "../permissions";
@@ -32,6 +32,8 @@ interface ParsedBashInput {
   command: string;
   capabilityTarget: string;
 }
+
+type OpenFileHandle = Awaited<ReturnType<typeof open>>;
 
 function requireString(value: unknown, field: string): string {
   if (typeof value !== "string") {
@@ -67,10 +69,10 @@ function ensurePathInsideWorkspace(workspaceRoot: string, resolvedPath: string):
   }
 }
 
-function findNearestExistingAncestor(targetPath: string): string | undefined {
+async function findNearestExistingAncestor(targetPath: string): Promise<string | undefined> {
   let currentPath = targetPath;
 
-  while (!existsSync(currentPath)) {
+  while (await access(currentPath, constants.F_OK).then(() => false).catch(() => true)) {
     const parentPath = path.dirname(currentPath);
     if (parentPath === currentPath) {
       return undefined;
@@ -81,18 +83,47 @@ function findNearestExistingAncestor(targetPath: string): string | undefined {
   return currentPath;
 }
 
-function ensureNoSymlinkEscape(workspaceRoot: string, resolvedPath: string): void {
-  const ancestor = findNearestExistingAncestor(resolvedPath);
+async function ensureNoSymlinkEscape(workspaceRoot: string, resolvedPath: string): Promise<void> {
+  const ancestor = await findNearestExistingAncestor(resolvedPath);
   if (!ancestor) {
     return;
   }
 
-  const realWorkspaceRoot = realpathSync(workspaceRoot);
-  const realAncestor = realpathSync(ancestor);
+  const realWorkspaceRoot = await realpath(workspaceRoot);
+  const realAncestor = await realpath(ancestor);
   const relativePath = path.relative(realWorkspaceRoot, realAncestor);
 
   if (path.isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith(`..${path.sep}`)) {
     throw new Error("Path traversal detected (symlink escape)");
+  }
+}
+
+// Open the file first, then verify the opened inode still matches the resolved
+// path so symlink swaps between check and use are rejected.
+async function acquireSafeFileHandle(
+  workspaceRoot: string,
+  resolvedPath: string,
+  flags: string,
+): Promise<OpenFileHandle> {
+  const fileHandle = await open(resolvedPath, flags);
+
+  try {
+    const [fdStat, realWorkspaceRoot, realResolvedPath] = await Promise.all([
+      fileHandle.stat(),
+      realpath(workspaceRoot),
+      realpath(resolvedPath),
+    ]);
+    const realStat = await stat(realResolvedPath);
+
+    if (fdStat.ino !== realStat.ino || fdStat.dev !== realStat.dev) {
+      throw new Error("Path traversal detected (symlink changed during open)");
+    }
+
+    ensurePathInsideWorkspace(realWorkspaceRoot, realResolvedPath);
+    return fileHandle;
+  } catch (error) {
+    await fileHandle.close();
+    throw error;
   }
 }
 
@@ -102,7 +133,6 @@ function resolveWorkspacePath(ctx: ToolExecutionContext, inputPath: unknown): Re
   const resolvedPath = path.resolve(workspaceRoot, requestedPath);
 
   ensurePathInsideWorkspace(workspaceRoot, resolvedPath);
-  ensureNoSymlinkEscape(workspaceRoot, resolvedPath);
 
   return {
     resolvedPath,
@@ -153,6 +183,7 @@ const READ_CAPABILITIES: Capability[] = ["fs.read"];
 const WRITE_CAPABILITIES: Capability[] = ["fs.write"];
 const EDIT_CAPABILITIES: Capability[] = ["fs.read", "fs.write"];
 const BASH_CAPABILITIES: Capability[] = ["fs.execute"];
+const BASH_EXECUTABLE = process.platform === "win32" ? "bash" : "/bin/bash";
 
 export const readTool: Tool<ReadToolInput, ToolResult> = {
   id: "read",
@@ -165,24 +196,30 @@ export const readTool: Tool<ReadToolInput, ToolResult> = {
   },
   async execute(ctx, input): Promise<ToolResult> {
     const { resolvedPath, capabilityTarget } = parseReadInput(ctx, input);
+    await ensureNoSymlinkEscape(path.resolve(ctx.cwd), resolvedPath);
     ctx.capabilities.require("fs.read", capabilityTarget);
 
-    const stats = await stat(resolvedPath);
-    if (stats.size > MAX_READ_BYTES) {
-      return {
-        ok: false,
-        error: `file too large (${stats.size} bytes)`,
-      };
-    }
+    const fileHandle = await acquireSafeFileHandle(path.resolve(ctx.cwd), resolvedPath, "r");
+    try {
+      const stats = await fileHandle.stat();
+      if (stats.size > MAX_READ_BYTES) {
+        return {
+          ok: false,
+          error: `file too large (${stats.size} bytes)`,
+        };
+      }
 
-    const data = await readFile(resolvedPath);
-    return {
-      ok: true,
-      output: data.toString("utf8"),
-      data: {
-        bytes: data.length,
-      },
-    };
+      const data = await fileHandle.readFile();
+      return {
+        ok: true,
+        output: data.toString("utf8"),
+        data: {
+          bytes: data.length,
+        },
+      };
+    } finally {
+      await fileHandle.close();
+    }
   },
 };
 
@@ -197,16 +234,19 @@ export const writeTool: Tool<WriteToolInput, ToolResult> = {
   },
   async execute(ctx, input): Promise<ToolResult> {
     const { resolvedPath, capabilityTarget, content, overwrite } = parseWriteInput(ctx, input);
+    await ensureNoSymlinkEscape(path.resolve(ctx.cwd), resolvedPath);
     ctx.capabilities.require("fs.write", capabilityTarget);
 
     await mkdir(path.dirname(resolvedPath), { recursive: true });
 
+    let fileHandle: OpenFileHandle | undefined;
     try {
-      if (overwrite) {
-        await writeFile(resolvedPath, content);
-      } else {
-        await writeFile(resolvedPath, content, { flag: "wx" });
-      }
+      fileHandle = await acquireSafeFileHandle(
+        path.resolve(ctx.cwd),
+        resolvedPath,
+        overwrite ? "w" : "wx",
+      );
+      await fileHandle.writeFile(content);
     } catch (error) {
       const fileError = error as NodeJS.ErrnoException;
       if (!overwrite && fileError.code === "EEXIST") {
@@ -216,6 +256,8 @@ export const writeTool: Tool<WriteToolInput, ToolResult> = {
         };
       }
       throw error;
+    } finally {
+      await fileHandle?.close();
     }
 
     return {
@@ -237,10 +279,11 @@ export const editTool: Tool<EditToolInput, ToolResult> = {
   },
   async execute(ctx, input): Promise<ToolResult> {
     const { resolvedPath, capabilityTarget, from, to } = parseEditInput(ctx, input);
+    await ensureNoSymlinkEscape(path.resolve(ctx.cwd), resolvedPath);
     ctx.capabilities.require("fs.read", capabilityTarget);
     ctx.capabilities.require("fs.write", capabilityTarget);
 
-    const fileHandle = await open(resolvedPath, "r+");
+    const fileHandle = await acquireSafeFileHandle(path.resolve(ctx.cwd), resolvedPath, "r+");
 
     try {
       const payload = await fileHandle.readFile("utf8");
@@ -279,11 +322,20 @@ export const bashTool: Tool<BashToolInput, ToolResult> = {
     const { command, capabilityTarget } = parseBashInput(input);
 
     ctx.capabilities.require("fs.execute", capabilityTarget);
-    const result = spawnSync("bash", ["-c", command], {
+
+    const safeEnv = { ...process.env };
+    for (const key of Object.keys(safeEnv)) {
+      if (/(API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS)/i.test(key)) {
+        delete safeEnv[key];
+      }
+    }
+
+    const result = spawnSync(BASH_EXECUTABLE, ["-c", command], {
       cwd: ctx.cwd,
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
       shell: false,
+      env: safeEnv,
       timeout: 120_000,
       maxBuffer: 1024 * 1024 * 5,
     });

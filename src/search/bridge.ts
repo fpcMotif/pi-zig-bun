@@ -227,7 +227,7 @@ export class SearchBridge {
       }
 
       if ("error" in payload) {
-        pending.reject(new Error(`${payload.error.code}: ${payload.error.message}`));
+        pending.reject(new Error(this.scrub(`${payload.error.code}: ${payload.error.message}`)));
       } else {
         pending.resolve(payload.result);
       }

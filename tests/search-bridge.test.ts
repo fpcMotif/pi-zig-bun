@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { SearchBridge } from "../src/search/bridge";
 
-async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash" | "stderr" | "stderr_sensitive" | "malformed" | "rpc_error"): Promise<{ root: string; binaryPath: string }> {
+async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash" | "stderr" | "stderr_sensitive" | "malformed" | "rpc_error" | "rpc_error_sensitive"): Promise<{ root: string; binaryPath: string }> {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-bridge-"));
   const binaryPath = path.join(root, "fake-bridge.mjs");
   const script = `#!/usr/bin/env node
@@ -28,6 +28,11 @@ rl.on("line", (line) => {
   if (mode === "malformed") {
     process.stdout.write("not json\\n");
     // Fallthrough to write actual result so we can test it ignored the malformed line
+  }
+  if (mode === "rpc_error_sensitive") {
+    const errorPayload = JSON.stringify({ jsonrpc: "2.0", id: req.id, error: { code: -32600, message: ${JSON.stringify(`Error occurred at binary ${binaryPath} in workspace ${root}`)} } });
+    process.stdout.write(errorPayload + "\\n");
+    return;
   }
   if (mode === "rpc_error") {
     const errorPayload = JSON.stringify({ jsonrpc: "2.0", id: req.id, error: { code: -32600, message: "Invalid Request" } });
@@ -95,6 +100,26 @@ describe("SearchBridge protocol behavior", () => {
     }
   });
 
+  test("rejects pending calls immediately when process exits mid-request", async () => {
+    const fixture = await createFakeBridgeBinary("timeout");
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 5000 });
+    try {
+      const callPromise = bridge.call("search.files", { query: "abc" });
+
+      // Wait for process to spawn and request to be sent
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      // Force kill the process mid-request
+      // @ts-ignore - access private field for testing
+      bridge.proc.kill("SIGKILL");
+
+      await expect(callPromise).rejects.toThrow(/exited with signal SIGKILL/);
+    } finally {
+      await bridge.stop();
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   test("enforces single-flight by rejecting interrupted concurrent call", async () => {
     const fixture = await createFakeBridgeBinary("timeout");
     const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
@@ -152,6 +177,17 @@ describe("SearchBridge protocol behavior", () => {
     try {
       const response = await bridge.call<{ method: string }>("search.files", { query: "abc" });
       expect(response.method).toBe("search.files");
+    } finally {
+      await bridge.stop();
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("scrubs sensitive paths from rpc error messages", async () => {
+    const fixture = await createFakeBridgeBinary("rpc_error_sensitive");
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    try {
+      await expect(bridge.call("search.files", { query: "abc" })).rejects.toThrow("-32600: Error occurred at binary [BINARY_PATH] in workspace [WORKSPACE_ROOT]");
     } finally {
       await bridge.stop();
       await rm(fixture.root, { recursive: true, force: true });

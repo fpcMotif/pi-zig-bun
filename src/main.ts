@@ -18,6 +18,7 @@ interface AppRuntime {
   search: SearchClient;
   sessionTree: SessionTree;
   capabilities: CapabilityManager;
+  workspaceRoot: string;
 }
 
 function requireSessionAccess(runtime: AppRuntime, sessionId: string): void {
@@ -84,7 +85,7 @@ function toAgentMessages(turns: Awaited<ReturnType<SessionTree["history"]>>): Ag
 }
 
 async function runSearchCommand(runtime: AppRuntime, query: string, limit: number, json: boolean): Promise<void> {
-  const response = await runtime.search.searchFiles(query, { limit, cwd: process.cwd(), includeScores: true });
+  const response = await runtime.search.searchFiles(query, { limit, cwd: runtime.workspaceRoot, includeScores: true });
   if (json) {
     console.log(JSON.stringify(response));
     return;
@@ -101,7 +102,7 @@ async function runSearchCommand(runtime: AppRuntime, query: string, limit: numbe
 }
 
 async function runGrepCommand(runtime: AppRuntime, query: string, limit: number, json: boolean): Promise<void> {
-  const response = await runtime.search.grep(query, { limit, cwd: process.cwd() });
+  const response = await runtime.search.grep(query, { limit, cwd: runtime.workspaceRoot });
   if (json) {
     console.log(JSON.stringify(response));
     return;
@@ -283,7 +284,7 @@ async function runInteractive(
   const root = await runtime.sessionTree.createRoot("system", "interactive session");
   let currentTurn = root.id;
   const agent = createAgentFromEnv();
-  const cwd = process.cwd();
+  const cwd = runtime.workspaceRoot;
 
   tui.writeBanner();
 
@@ -432,7 +433,7 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
   const search = SearchClient.from({ workspaceRoot: args.cwd });
   await search.ensureInitialized(args.cwd);
   const policyPath = path.join(args.cwd, ".pi", "policy.json");
-  const policy = loadPolicyFile(policyPath);
+  const policy = await loadPolicyFile(policyPath);
   const hasExplicitPolicy = Object.keys(policy).length > 0;
   const capabilities = new CapabilityManager(
     hasExplicitPolicy
@@ -457,6 +458,7 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
     search,
     sessionTree: new SessionTree(new SessionStore(args.cwd)),
     capabilities,
+    workspaceRoot: args.cwd,
   };
 
   try {

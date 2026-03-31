@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, appendFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { SessionStore, SessionTree } from "../src/session/tree";
@@ -124,6 +124,23 @@ describe("SessionTree invariants", () => {
       const tree = new SessionTree(store);
 
       await expect(tree.fork("non-existent-id", "user", "should fail")).rejects.toThrow();
+    });
+  });
+
+  test("deserialize skips malformed lines", async () => {
+    await withTempWorkspace(async (root) => {
+      const store = new SessionStore(root);
+      const tree = new SessionTree(store);
+      const rootTurn = await tree.createRoot("system", "root");
+
+      await appendFile(path.join(root, ".pi", "sessions.jsonl"), "\nnot valid json\n", "utf8");
+
+      // Use a new store to bypass any in-memory caching and force deserialization from disk
+      const readerStore = new SessionStore(root);
+      const turns = await readerStore.allTurns();
+
+      expect(turns).toHaveLength(1);
+      expect(turns[0]?.id).toBe(rootTurn.id);
     });
   });
 });

@@ -36,6 +36,151 @@ export interface SearchGrepOptions {
   maxTypos?: number;
 }
 
+type SearchMatchType = SearchFileResultItem["matchType"];
+
+type RawSearchFileResultItem = {
+  path?: unknown;
+  score?: unknown;
+  rank?: unknown;
+  matchType?: unknown;
+  match_type?: unknown;
+};
+
+type RawSearchFilesResponse = {
+  query?: unknown;
+  total?: unknown;
+  offset?: unknown;
+  limit?: unknown;
+  elapsedMs?: unknown;
+  elapsed_ms?: unknown;
+  results?: unknown;
+};
+
+type RawSearchGrepResultItem = {
+  path?: unknown;
+  line?: unknown;
+  column?: unknown;
+  score?: unknown;
+  text?: unknown;
+};
+
+type RawSearchGrepResponse = {
+  query?: unknown;
+  total?: unknown;
+  elapsedMs?: unknown;
+  elapsed_ms?: unknown;
+  limit?: unknown;
+  matches?: unknown;
+};
+
+const SEARCH_MATCH_TYPES = new Set<SearchMatchType>([
+  "exact",
+  "prefix",
+  "substring",
+  "fuzzy",
+  "fallback",
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requireRecord(value: unknown, field: string): Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be an object`);
+  }
+  return value;
+}
+
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`${field} must be a string`);
+  }
+  return value;
+}
+
+function requireNumber(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${field} must be a finite number`);
+  }
+  return value;
+}
+
+function pickWireField(record: Record<string, unknown>, camelCase: string, snakeCase: string): unknown {
+  if (Object.prototype.hasOwnProperty.call(record, camelCase)) {
+    return record[camelCase];
+  }
+  return record[snakeCase];
+}
+
+function requireSearchMatchType(value: unknown, field: string): SearchMatchType {
+  if (typeof value !== "string" || !SEARCH_MATCH_TYPES.has(value as SearchMatchType)) {
+    throw new Error(`${field} must be one of: ${[...SEARCH_MATCH_TYPES].join(", ")}`);
+  }
+  return value as SearchMatchType;
+}
+
+function normalizeSearchFileResultItem(value: unknown): SearchFileResultItem {
+  const record = requireRecord(value, "search.files result");
+  return {
+    path: requireString(record.path, "search.files result.path"),
+    score: requireNumber(record.score, "search.files result.score"),
+    rank: requireNumber(record.rank, "search.files result.rank"),
+    matchType: requireSearchMatchType(
+      pickWireField(record, "matchType", "match_type"),
+      "search.files result.matchType",
+    ),
+  };
+}
+
+function normalizeSearchFilesResponse(value: unknown): SearchFilesResponse {
+  const record = requireRecord(value, "search.files response") as RawSearchFilesResponse;
+  if (!Array.isArray(record.results)) {
+    throw new Error("search.files response.results must be an array");
+  }
+
+  return {
+    query: requireString(record.query, "search.files response.query"),
+    total: requireNumber(record.total, "search.files response.total"),
+    offset: requireNumber(record.offset, "search.files response.offset"),
+    limit: requireNumber(record.limit, "search.files response.limit"),
+    elapsedMs: requireNumber(
+      pickWireField(record as Record<string, unknown>, "elapsedMs", "elapsed_ms"),
+      "search.files response.elapsedMs",
+    ),
+    results: record.results.map((item) => normalizeSearchFileResultItem(item)),
+  };
+}
+
+function normalizeSearchGrepResultItem(value: unknown): SearchGrepResultItem {
+  const record = requireRecord(value, "search.grep match") as RawSearchGrepResultItem;
+  return {
+    path: requireString(record.path, "search.grep match.path"),
+    line: requireNumber(record.line, "search.grep match.line"),
+    column: requireNumber(record.column, "search.grep match.column"),
+    score: requireNumber(record.score, "search.grep match.score"),
+    text: requireString(record.text, "search.grep match.text"),
+  };
+}
+
+function normalizeSearchGrepResponse(value: unknown): SearchGrepResponse {
+  const record = requireRecord(value, "search.grep response") as RawSearchGrepResponse;
+  if (!Array.isArray(record.matches)) {
+    throw new Error("search.grep response.matches must be an array");
+  }
+
+  return {
+    query: requireString(record.query, "search.grep response.query"),
+    total: requireNumber(record.total, "search.grep response.total"),
+    elapsedMs: requireNumber(
+      pickWireField(record as Record<string, unknown>, "elapsedMs", "elapsed_ms"),
+      "search.grep response.elapsedMs",
+    ),
+    limit: requireNumber(record.limit, "search.grep response.limit"),
+    matches: record.matches.map((item) => normalizeSearchGrepResultItem(item)),
+  };
+}
+
 export class SearchClient {
   constructor(
     private readonly bridge: SearchBridge,
@@ -78,16 +223,12 @@ export class SearchClient {
       proximityWeight: options.proximityWeight,
     };
 
-    const response = await this.bridge.call<{
-      query: string;
-      total: number;
-      offset: number;
-      limit: number;
-      elapsedMs: number;
-      results: SearchFileResultItem[];
-    }>("search.files", Object.fromEntries(Object.entries(params).filter((entry) => entry[1] !== undefined)));
+    const response = await this.bridge.call<unknown>(
+      "search.files",
+      Object.fromEntries(Object.entries(params).filter((entry) => entry[1] !== undefined)),
+    );
 
-    return response;
+    return normalizeSearchFilesResponse(response);
   }
 
   public async grep(
@@ -103,15 +244,8 @@ export class SearchClient {
       maxTypos: options.maxTypos,
     };
 
-    const response = await this.bridge.call<{
-      query: string;
-      total: number;
-      elapsedMs: number;
-      limit: number;
-      matches: SearchGrepResultItem[];
-    }>("search.grep", params);
-
-    return response;
+    const response = await this.bridge.call<unknown>("search.grep", params);
+    return normalizeSearchGrepResponse(response);
   }
 
   public async uiUpdate(params: UiUpdateParams): Promise<UiAck> {

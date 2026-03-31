@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { SearchClient } from "../src/search/client";
 
 describe("SearchClient contract", () => {
-  test("issues expected bridge calls and returns typed responses", async () => {
+  test("issues expected bridge calls and normalizes wire responses", async () => {
     const calls: Array<{ method: string; params: unknown }> = [];
     const bridge = {
       call: async (method: string, params?: unknown) => {
@@ -16,15 +16,15 @@ describe("SearchClient contract", () => {
             total: 1,
             offset: 0,
             limit: 5,
-            elapsedMs: 3,
-            results: [{ path: "src/main.ts", score: 10, matchType: "exact", rank: 1 }],
+            elapsed_ms: 3,
+            results: [{ path: "src/main.ts", score: 10, match_type: "exact", rank: 1 }],
           };
         }
         if (method === "search.grep") {
           return {
             query: "run",
             total: 1,
-            elapsedMs: 4,
+            elapsed_ms: 4,
             limit: 3,
             matches: [{ path: "src/main.ts", line: 1, column: 0, score: 1, text: "run" }],
           };
@@ -42,7 +42,10 @@ describe("SearchClient contract", () => {
     const grepResp = await client.grep("run", { limit: 3, caseInsensitive: false });
     await client.stop();
 
+    expect(fileResp.elapsedMs).toBe(3);
     expect(fileResp.results[0]?.path).toBe("src/main.ts");
+    expect(fileResp.results[0]?.matchType).toBe("exact");
+    expect(grepResp.elapsedMs).toBe(4);
     expect(grepResp.matches[0]?.line).toBe(1);
 
     expect(calls[0]).toEqual({ method: "search.init", params: { root: "/workspace/repo" } });

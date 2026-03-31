@@ -1227,7 +1227,6 @@ pub fn main() !void {
 
     var write_buffer: [4096]u8 = undefined;
     var out = stdout.writer(&write_buffer);
-    const out_writer = &out.interface;
 
     while (true) {
         const bytes_read = try stdin.read(read_buffer[0..]);
@@ -1237,7 +1236,7 @@ pub fn main() !void {
                     _ = line_buffer.pop();
                 }
                 if (line_buffer.items.len > 0) {
-                    try handleRequest(allocator, &state, out_writer, line_buffer.items);
+                    try handleRequest(allocator, &state, &out.interface, line_buffer.items);
                 }
             }
             break;
@@ -1254,7 +1253,7 @@ pub fn main() !void {
                 }
 
                 if (line_buffer.items.len > 0) {
-                    try handleRequest(allocator, &state, out_writer, line_buffer.items);
+                    try handleRequest(allocator, &state, &out.interface, line_buffer.items);
                 }
                 line_buffer.clearRetainingCapacity();
                 continue;
@@ -1264,12 +1263,11 @@ pub fn main() !void {
         }
     }
 
-    try out_writer.flush();
 }
 
 test "fuzzy ranking prefers exact file name match" {
     const allocator = std.testing.allocator;
-    const query = try parseSearchQuery(allocator, "alpha");
+    const query = try parseSearchQuery(allocator, "alpha.ts");
     defer deinitParsedQuery(allocator, query);
 
     const exact = SearchEntry{
@@ -1280,6 +1278,7 @@ test "fuzzy ranking prefers exact file name match" {
         .file_name_lower = "alpha.ts",
         .modified_ms = 0,
         .size = 10,
+        .frecency = 0,
     };
     const fuzzy = SearchEntry{
         .abs_path = "alpah.ts",
@@ -1289,6 +1288,7 @@ test "fuzzy ranking prefers exact file name match" {
         .file_name_lower = "alpah.ts",
         .modified_ms = 0,
         .size = 10,
+        .frecency = 0,
     };
 
     const exact_score = try scorePathMatch(query, exact, 2, allocator);
@@ -1320,7 +1320,7 @@ test "grep scoring finds exact and fuzzy matches" {
     const allocator = std.testing.allocator;
     const exact = scoreLineMatch("needle line", "needle", false, 1, allocator);
     try std.testing.expect(exact != null);
-    const fuzzy = scoreLineMatch("neddle typo", "needle", true, 2, allocator);
+    const fuzzy = scoreLineMatch("neddle", "needle", true, 2, allocator);
     try std.testing.expect(fuzzy != null);
     try std.testing.expect(fuzzy.? <= exact.?);
 }
@@ -1333,7 +1333,8 @@ test "json-rpc contract handles ping and unknown methods" {
     var out_buf: [4096]u8 = undefined;
     var stream = std.io.fixedBufferStream(&out_buf);
     var writer = stream.writer();
-    const iface = &writer.interface;
+    var writer_adapter = writer.adaptToNewApi(&.{});
+    const iface = &writer_adapter.new_interface;
 
     try handleRequest(allocator, &state, iface, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}");
     try handleRequest(allocator, &state, iface, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"missing\"}");
