@@ -103,8 +103,8 @@ async function ensureNoSymlinkEscape(workspaceRoot: string, resolvedPath: string
 async function acquireSafeFileHandle(
   workspaceRoot: string,
   resolvedPath: string,
-  flags: string,
-): Promise<OpenFileHandle> {
+  flags: string | number,
+): Promise<{ fileHandle: OpenFileHandle; realCapabilityTarget: string }> {
   const fileHandle = await open(resolvedPath, flags);
 
   try {
@@ -120,7 +120,7 @@ async function acquireSafeFileHandle(
     }
 
     ensurePathInsideWorkspace(realWorkspaceRoot, realResolvedPath);
-    return fileHandle;
+    return { fileHandle, realCapabilityTarget: toCapabilityTarget(realWorkspaceRoot, realResolvedPath) };
   } catch (error) {
     await fileHandle.close();
     throw error;
@@ -197,9 +197,8 @@ export const readTool: Tool<ReadToolInput, ToolResult> = {
   async execute(ctx, input): Promise<ToolResult> {
     const { resolvedPath, capabilityTarget } = parseReadInput(ctx, input);
     await ensureNoSymlinkEscape(path.resolve(ctx.cwd), resolvedPath);
-    ctx.capabilities.require("fs.read", capabilityTarget);
-
-    const fileHandle = await acquireSafeFileHandle(path.resolve(ctx.cwd), resolvedPath, "r");
+    const { fileHandle, realCapabilityTarget } = await acquireSafeFileHandle(path.resolve(ctx.cwd), resolvedPath, "r");
+    ctx.capabilities.require("fs.read", realCapabilityTarget);
     try {
       const stats = await fileHandle.stat();
       if (stats.size > MAX_READ_BYTES) {
@@ -235,17 +234,22 @@ export const writeTool: Tool<WriteToolInput, ToolResult> = {
   async execute(ctx, input): Promise<ToolResult> {
     const { resolvedPath, capabilityTarget, content, overwrite } = parseWriteInput(ctx, input);
     await ensureNoSymlinkEscape(path.resolve(ctx.cwd), resolvedPath);
-    ctx.capabilities.require("fs.write", capabilityTarget);
-
     await mkdir(path.dirname(resolvedPath), { recursive: true });
 
     let fileHandle: OpenFileHandle | undefined;
     try {
-      fileHandle = await acquireSafeFileHandle(
+      const flags = overwrite ? (constants.O_WRONLY | constants.O_CREAT) : "wx";
+      const acquired = await acquireSafeFileHandle(
         path.resolve(ctx.cwd),
         resolvedPath,
-        overwrite ? "w" : "wx",
+        flags,
       );
+      fileHandle = acquired.fileHandle;
+      ctx.capabilities.require("fs.write", acquired.realCapabilityTarget);
+
+      if (overwrite) {
+        await fileHandle.truncate(0);
+      }
       await fileHandle.writeFile(content);
     } catch (error) {
       const fileError = error as NodeJS.ErrnoException;
@@ -280,10 +284,9 @@ export const editTool: Tool<EditToolInput, ToolResult> = {
   async execute(ctx, input): Promise<ToolResult> {
     const { resolvedPath, capabilityTarget, from, to } = parseEditInput(ctx, input);
     await ensureNoSymlinkEscape(path.resolve(ctx.cwd), resolvedPath);
-    ctx.capabilities.require("fs.read", capabilityTarget);
-    ctx.capabilities.require("fs.write", capabilityTarget);
-
-    const fileHandle = await acquireSafeFileHandle(path.resolve(ctx.cwd), resolvedPath, "r+");
+    const { fileHandle, realCapabilityTarget } = await acquireSafeFileHandle(path.resolve(ctx.cwd), resolvedPath, "r+");
+    ctx.capabilities.require("fs.read", realCapabilityTarget);
+    ctx.capabilities.require("fs.write", realCapabilityTarget);
 
     try {
       const payload = await fileHandle.readFile("utf8");
