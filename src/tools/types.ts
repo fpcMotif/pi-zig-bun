@@ -59,7 +59,7 @@ function validateCapabilityRequirements(
 
   for (const capability of tool.capabilities) {
     if (!requirements.some((requirement) => requirement.capability === capability)) {
-      throw new Error(`Tool ${tool.id} did not resolve required capability: ${capability}`);
+      throw new Error(`Tool ${tool.id} requires capability ${capability} but no resolver was provided.`);
     }
   }
 }
