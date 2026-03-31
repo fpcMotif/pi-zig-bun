@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { SearchBridge } from "../src/search/bridge";
 
-async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash" | "stderr" | "stderr_sensitive" | "malformed" | "rpc_error" | "rpc_error_sensitive"): Promise<{ root: string; binaryPath: string }> {
+async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash" | "stderr" | "stderr_sensitive" | "malformed" | "non_protocol" | "rpc_error" | "rpc_error_sensitive"): Promise<{ root: string; binaryPath: string }> {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-bridge-"));
   const binaryPath = path.join(root, "fake-bridge.mjs");
   const script = `#!/usr/bin/env node
@@ -173,6 +173,18 @@ describe("SearchBridge protocol behavior", () => {
 
   test("ignores malformed json on stdout", async () => {
     const fixture = await createFakeBridgeBinary("malformed");
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    try {
+      const response = await bridge.call<{ method: string }>("search.files", { query: "abc" });
+      expect(response.method).toBe("search.files");
+    } finally {
+      await bridge.stop();
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("ignores valid json that is not protocol json on stdout", async () => {
+    const fixture = await createFakeBridgeBinary("non_protocol");
     const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
     try {
       const response = await bridge.call<{ method: string }>("search.files", { query: "abc" });
