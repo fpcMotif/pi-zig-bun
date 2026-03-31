@@ -2,7 +2,34 @@
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { computeStats, fmtMs, markdownTable } from "./lib";
+function computeStats(raw: number[]): { p50: number; p95: number } {
+  if (raw.length === 0) return { p50: 0, p95: 0 };
+  const sorted = [...raw].sort((a, b) => a - b);
+  return {
+    p50: sorted[Math.floor(sorted.length * 0.50)] ?? 0,
+    p95: sorted[Math.floor(sorted.length * 0.95)] ?? 0
+  };
+}
+
+function fmtMs(ms: number | null): string {
+  if (ms === null) return "N/A";
+  return ms.toFixed(2) + " ms";
+}
+
+function markdownTable(headers: string[], rows: string[][]): string {
+  const colWidths = headers.map((h, i) =>
+    Math.max(h.length, ...rows.map(r => (r[i] || "").length))
+  );
+
+  const formatRow = (row: string[]) =>
+    "| " + row.map((cell, i) => (cell ?? "").padEnd(colWidths[i] ?? 0)).join(" | ") + " |";
+
+  const headerRow = formatRow(headers);
+  const separatorRow = "| " + colWidths.map(w => "-".repeat(w ?? 0)).join(" | ") + " |";
+  const bodyRows = rows.map(formatRow).join("\n");
+
+  return [headerRow, separatorRow, bodyRows].join("\n");
+}
 
 interface MetricSummary {
   metric: string;
