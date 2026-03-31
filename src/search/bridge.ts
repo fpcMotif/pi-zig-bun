@@ -98,7 +98,7 @@ export class SearchBridge {
     if (!existsSync(this.binaryPath)) {
       throw new Error(
         [
-          `Zig search binary missing: ${this.binaryPath}`,
+          `Zig search binary missing: [BINARY_PATH]`,
           "Run `zig build` before starting pi-zig-bun.",
           "If you use a custom binary path, pass { binaryPath } when creating SearchBridge.",
         ].join(" "),
@@ -168,7 +168,7 @@ export class SearchBridge {
     this.proc.on("error", (err) => {
       for (const call of this.pending.values()) {
         if (call.timeoutHandle) clearTimeout(call.timeoutHandle);
-        call.reject(new Error(`Search bridge process error: ${(err as Error).message}`));
+        call.reject(new Error(`Search bridge process error: ${this.scrub((err as Error).message)}`));
       }
       this.pending.clear();
       this.started = false;
@@ -227,7 +227,7 @@ export class SearchBridge {
       }
 
       if ("error" in payload) {
-        pending.reject(new Error(`${payload.error.code}: ${payload.error.message}`));
+        pending.reject(new Error(`${payload.error.code}: ${this.scrub(payload.error.message)}`));
       } else {
         pending.resolve(payload.result);
       }

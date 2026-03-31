@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { SearchBridge } from "../src/search/bridge";
 
-async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash" | "stderr" | "stderr_sensitive" | "malformed" | "rpc_error"): Promise<{ root: string; binaryPath: string }> {
+async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash" | "stderr" | "stderr_sensitive" | "malformed" | "rpc_error" | "rpc_error_sensitive"): Promise<{ root: string; binaryPath: string }> {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-bridge-"));
   const binaryPath = path.join(root, "fake-bridge.mjs");
   const script = `#!/usr/bin/env node
@@ -28,6 +28,12 @@ rl.on("line", (line) => {
   if (mode === "malformed") {
     process.stdout.write("not json\\n");
     // Fallthrough to write actual result so we can test it ignored the malformed line
+  }
+  if (mode === "rpc_error_sensitive") {
+    const message = "Error occurred at ${binaryPath} in ${root}";
+    const errorPayload = JSON.stringify({ jsonrpc: "2.0", id: req.id, error: { code: -32600, message } });
+    process.stdout.write(errorPayload + "\\n");
+    return;
   }
   if (mode === "rpc_error") {
     const errorPayload = JSON.stringify({ jsonrpc: "2.0", id: req.id, error: { code: -32600, message: "Invalid Request" } });
@@ -215,6 +221,18 @@ describe("SearchBridge protocol behavior", () => {
       expect(response.echoed).toEqual(params);
     } finally {
       await bridge.stop();
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("scrubs sensitive paths from stdout error responses", async () => {
+    const fixture = await createFakeBridgeBinary("rpc_error_sensitive");
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    try {
+      await expect(bridge.call("search.files", { query: "abc" })).rejects.toThrow("-32600: Error occurred at [BINARY_PATH] in [WORKSPACE_ROOT]");
+    } finally {
+      await bridge.stop();
+      const { rm } = await import("node:fs/promises");
       await rm(fixture.root, { recursive: true, force: true });
     }
   });
