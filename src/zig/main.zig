@@ -776,27 +776,8 @@ fn scoreLineMatch(line_lower: []const u8, query_lower: []const u8, fuzzy: bool, 
 }
 
 fn collectGitStatus(allocator: Allocator, root: []const u8) std.StringHashMap(GitStatusKind) {
-    var map = std.StringHashMap(GitStatusKind).init(allocator);
-    const run_result = std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{ "git", "-C", root, "status", "--porcelain" },
-        .max_output_bytes = 1024 * 1024,
-    }) catch return map;
-    defer allocator.free(run_result.stdout);
-    defer allocator.free(run_result.stderr);
-
-    var it = mem.splitScalar(u8, run_result.stdout, '\n');
-    while (it.next()) |line| {
-        if (line.len < 4) continue;
-        const status = if (line[0] == '?' and line[1] == '?') GitStatusKind.untracked else GitStatusKind.modified;
-        const rel = trimSpace(line[3..]);
-        const rel_copy = allocator.dupe(u8, rel) catch continue;
-        map.put(rel_copy, status) catch {
-            allocator.free(rel_copy);
-        };
-    }
-
-    return map;
+    _ = root;
+    return std.StringHashMap(GitStatusKind).init(allocator);
 }
 
 fn scoreByFallbackRecent(entry: SearchEntry) i32 {
