@@ -117,6 +117,12 @@ export class SearchBridge {
 
     this.started = true;
 
+    this.setupStderrLogging();
+    this.setupStdoutParsing();
+    this.setupProcessEventHandlers();
+  }
+
+  private setupStderrLogging(): void {
     // We shouldn't fail fatally if the root directory is wiped while bridge runs.
     // Ensure the directory exists initially.
     const piDir = path.join(this.workspaceRoot, ".pi");
@@ -124,7 +130,7 @@ export class SearchBridge {
 
     const stderrLog = path.join(piDir, "search-bridge.stderr.log");
 
-    if (this.proc.stderr) {
+    if (this.proc?.stderr) {
       this.proc.stderr.on("data", (chunk) => {
         try {
           // Re-create the directory if it was deleted concurrently before logging.
@@ -137,9 +143,11 @@ export class SearchBridge {
         }
       });
     }
+  }
 
+  private setupStdoutParsing(): void {
     this.stdoutBuffer = "";
-    this.proc.stdout.on("data", (chunk) => {
+    this.proc?.stdout?.on("data", (chunk) => {
       this.stdoutBuffer += chunk.toString();
       while (true) {
         const newlineIndex = this.stdoutBuffer.indexOf("\n");
@@ -152,8 +160,10 @@ export class SearchBridge {
         this.handleLine(line);
       }
     });
+  }
 
-    this.proc.on("close", (code, signal) => {
+  private setupProcessEventHandlers(): void {
+    this.proc?.on("close", (code, signal) => {
       const err = new Error(
         `Search bridge exited${code !== null ? ` with code ${code}` : ` with signal ${String(signal)}`}`,
       );
@@ -165,7 +175,7 @@ export class SearchBridge {
       this.started = false;
     });
 
-    this.proc.on("error", (err) => {
+    this.proc?.on("error", (err) => {
       for (const call of this.pending.values()) {
         if (call.timeoutHandle) clearTimeout(call.timeoutHandle);
         call.reject(new Error(`Search bridge process error: ${(err as Error).message}`));
