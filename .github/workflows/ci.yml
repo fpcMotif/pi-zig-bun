@@ -67,14 +67,14 @@ jobs:
       - name: Validate TypeScript
         run: bun run validate
 
+      - name: Build Zig backend
+        run: zig build
       - name: Run Bun unit/integration tests
         run: bun run test
 
       - name: Run Zig unit tests
         run: bun run test:zig
 
-      - name: Build Zig backend
-        run: zig build
 
       - name: Install or ensure prek
         run: |
