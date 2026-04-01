@@ -498,6 +498,97 @@ describe("MemoryToolRegistry", () => {
       execute: () => ({ ok: true }),
     });
 
-    await expect(registry.run("missing-capability-tool", {}, makeCtx(tmpDir))).rejects.toThrow("did not resolve required capability");
+    await expect(registry.run("missing-capability-tool", {}, makeCtx(tmpDir))).rejects.toThrow("requires capability fs.write but no resolver was provided.");
+  });
+
+  test("run() handles tools with no capabilities", async () => {
+    const registry = new MemoryToolRegistry();
+    registry.register({
+      id: "no-cap-tool",
+      name: "no-cap-tool",
+      description: "tool with no capabilities",
+      capabilities: [],
+      resolveCapabilityTargets: () => [],
+      execute: () => ({ ok: true }),
+    });
+
+    const result = await registry.run<{ ok: boolean }>("no-cap-tool", {}, makeCtx(tmpDir));
+    expect(result.ok).toBe(true);
+  });
+
+  test("run() rejects undeclared capabilities even when tool has no capabilities", async () => {
+    const registry = new MemoryToolRegistry();
+    registry.register({
+      id: "sneaky-tool",
+      name: "sneaky-tool",
+      description: "tool returning targets but declaring no capabilities",
+      capabilities: [],
+      resolveCapabilityTargets: () => [{ capability: "fs.read", target: "tmp/file.txt" }],
+      execute: () => ({ ok: true }),
+    });
+
+    await expect(registry.run("sneaky-tool", {}, makeCtx(tmpDir))).rejects.toThrow("resolved undeclared capability");
+  });
+
+  test("run() allows multiple capability requirements for the same capability", async () => {
+    const registry = new MemoryToolRegistry();
+    registry.register({
+      id: "multi-target-tool",
+      name: "multi-target-tool",
+      description: "tool requiring multiple targets for same capability",
+      capabilities: ["fs.read"],
+      resolveCapabilityTargets: () => [
+        { capability: "fs.read", target: "tmp/file1.txt" },
+        { capability: "fs.read", target: "tmp/file2.txt" }
+      ],
+      execute: () => ({ ok: true }),
+    });
+
+    const result = await registry.run<{ ok: boolean }>("multi-target-tool", {}, makeCtx(tmpDir));
+    expect(result.ok).toBe(true);
+  });
+
+  test("run() handles default capability requirements fallback when resolveCapabilityTargets is missing", async () => {
+    const registry = new MemoryToolRegistry();
+    registry.register({
+      id: "default-cap-tool",
+      name: "default-cap-tool",
+      description: "tool relying on defaultCapabilityRequirements fallback",
+      capabilities: ["session.access"],
+      execute: () => ({ ok: true }),
+    });
+
+    // When the input lacks a path, the default requirement should be generated with undefined target
+    // and correctly pass capability validation since capabilities match what is declared.
+    const result = await registry.run<{ ok: boolean }>("default-cap-tool", {}, makeCtx(tmpDir));
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe("MemoryToolRegistry edge cases", () => {
+  let tmpDir = "/tmp";
+
+  test("validateCapabilityRequirements throws correct error for undefined keys or missing resolvers", async () => {
+    const registry = new MemoryToolRegistry();
+    registry.register({
+      id: "undefined-resolver-tool",
+      name: "undefined-resolver-tool",
+      description: "tool with missing resolver for declared capability",
+      capabilities: ["net.http"],
+      resolveCapabilityTargets: () => [], // simulates returning undefined or empty for a required capability
+      execute: () => ({ ok: true }),
+    });
+
+    const ctx = {
+      id: "test",
+      cwd: tmpDir,
+      capabilities: {
+        require: () => {},
+      },
+    };
+
+    await expect(
+      registry.run("undefined-resolver-tool", {}, ctx)
+    ).rejects.toThrow("Tool undefined-resolver-tool requires capability net.http but no resolver was provided.");
   });
 });
