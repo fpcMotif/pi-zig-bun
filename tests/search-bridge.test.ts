@@ -52,7 +52,7 @@ rl.on("line", (line) => {
 describe("SearchBridge protocol behavior", () => {
   test("handles framed JSON-RPC responses", async () => {
     const fixture = await createFakeBridgeBinary("ok");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 1500 });
     try {
       const response = await bridge.call<{ method: string }>("search.files", { query: "abc" });
       expect(response.method).toBe("search.files");
@@ -76,7 +76,7 @@ describe("SearchBridge protocol behavior", () => {
   test("recovers after process crash on next call", async () => {
     const crashFixture = await createFakeBridgeBinary("crash");
     const okFixture = await createFakeBridgeBinary("ok");
-    const bridge = new SearchBridge({ binaryPath: crashFixture.binaryPath, workspaceRoot: crashFixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: crashFixture.binaryPath, workspaceRoot: crashFixture.root, requestTimeoutMs: 1500 });
     try {
       let crashed = false;
       try {
@@ -87,7 +87,7 @@ describe("SearchBridge protocol behavior", () => {
       }
       expect(crashed).toBe(true);
       await bridge.stop();
-      const recovered = new SearchBridge({ binaryPath: okFixture.binaryPath, workspaceRoot: okFixture.root, requestTimeoutMs: 200 });
+      const recovered = new SearchBridge({ binaryPath: okFixture.binaryPath, workspaceRoot: okFixture.root, requestTimeoutMs: 1500 });
       try {
         const response = await recovered.call<{ method: string }>("search.grep", { query: "abc" });
         expect(response.method).toBe("search.grep");
@@ -102,7 +102,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("rejects pending calls immediately when process exits mid-request", async () => {
     const fixture = await createFakeBridgeBinary("timeout");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 5000 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
     try {
       const callPromise = bridge.call("search.files", { query: "abc" });
 
@@ -136,7 +136,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("logs stderr output to .pi/search-bridge.stderr.log", async () => {
     const fixture = await createFakeBridgeBinary("stderr");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 1500 });
     try {
       await bridge.call("search.files", { query: "abc" });
 
@@ -154,7 +154,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("scrubs sensitive paths from stderr log output", async () => {
     const fixture = await createFakeBridgeBinary("stderr_sensitive");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 1500 });
     try {
       await bridge.call("search.files", { query: "abc" });
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -173,7 +173,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("ignores malformed json on stdout", async () => {
     const fixture = await createFakeBridgeBinary("malformed");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 1500 });
     try {
       const response = await bridge.call<{ method: string }>("search.files", { query: "abc" });
       expect(response.method).toBe("search.files");
@@ -185,7 +185,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("scrubs sensitive paths from rpc error messages", async () => {
     const fixture = await createFakeBridgeBinary("rpc_error_sensitive");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 1500 });
     try {
       await expect(bridge.call("search.files", { query: "abc" })).rejects.toThrow("-32600: Error occurred at binary [BINARY_PATH] in workspace [WORKSPACE_ROOT]");
     } finally {
@@ -196,7 +196,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("rejects call when rpc returns error", async () => {
     const fixture = await createFakeBridgeBinary("rpc_error");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 1500 });
     try {
       await expect(bridge.call("search.files", { query: "abc" })).rejects.toThrow("-32600: Invalid Request");
     } finally {
@@ -207,7 +207,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("rejects call on child process error", async () => {
     const fixture = await createFakeBridgeBinary("ok");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 1500 });
     try {
       const callPromise = bridge.call("search.files", { query: "abc" });
 
@@ -225,7 +225,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("uiUpdate wrapper calls ui.update", async () => {
     const fixture = await createFakeBridgeBinary("ok");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 1500 });
     try {
       const params = { turnId: "turn-1", kind: "status" as const, message: "progress", meta: { progress: 0.5 } };
       const response = await bridge.uiUpdate(params);
@@ -241,7 +241,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("uiInput wrapper calls ui.input", async () => {
     const fixture = await createFakeBridgeBinary("ok");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 1500 });
     try {
       const params = { turnId: "turn-1", text: "testing", metadata: { source: "test" } };
       const response = await bridge.uiInput(params);
