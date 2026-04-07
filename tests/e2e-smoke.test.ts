@@ -67,7 +67,7 @@ async function runOrThrow(args: string[], workspaceRoot: string): Promise<number
 describe("e2e smoke: search + grep + tree", () => {
   test("run() executes command flows against bridge", async () => {
     const ctx = await makeWorkspace();
-    const logSpy = mock(() => {});
+    const logSpy = mock((msg?: string) => {});
     const errSpy = mock(() => {});
 
     const originalLog = console.log;
@@ -75,7 +75,7 @@ describe("e2e smoke: search + grep + tree", () => {
     const originalStdoutWrite = process.stdout.write;
     console.log = logSpy as typeof console.log;
     console.error = errSpy as typeof console.error;
-    process.stdout.write = ((msg: string) => { logSpy(msg); return true; }) as any;
+    process.stdout.write = ((msg: string) => { logSpy(msg.replace(/\n$/, '')); return true; }) as any;
 
     try {
       const searchCode = await runOrThrow(["--cwd", ctx.root, "search", "needle"], ctx.root);
@@ -101,7 +101,7 @@ describe("e2e smoke: search + grep + tree", () => {
 
   test("run() returns stable session and login responses", async () => {
     const ctx = await makeWorkspace();
-    const logSpy = mock(() => {});
+    const logSpy = mock((msg?: string) => {});
     const errSpy = mock(() => {});
 
     const originalLog = console.log;
@@ -109,7 +109,7 @@ describe("e2e smoke: search + grep + tree", () => {
     const originalStdoutWrite = process.stdout.write;
     console.log = logSpy as typeof console.log;
     console.error = errSpy as typeof console.error;
-    process.stdout.write = ((msg: string) => { logSpy(msg); return true; }) as any;
+    process.stdout.write = ((msg: string) => { logSpy(msg.replace(/\n$/, '')); return true; }) as any;
 
     try {
       const sessionUsageCode = await runOrThrow(["--cwd", ctx.root, "session"], ctx.root);
