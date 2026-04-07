@@ -19,7 +19,7 @@ class TestBaseAgent extends BaseSseAgent {
 
   protected parseChunk(payload: unknown) {
     if (this.parseCount < this.chunksToReturn.length) {
-      return this.chunksToReturn[this.parseCount++];
+      return this.chunksToReturn[this.parseCount++] || {};
     }
     return {};
   }
@@ -64,7 +64,7 @@ describe("BaseSseAgent", () => {
       'data: [DONE]\n\n'
     ]);
 
-    const stream = await agent.stream(sampleInput);
+    const stream = (await agent.stream(sampleInput))!;
     const events = [];
     for await (const event of stream.events) {
       events.push(event);
@@ -74,7 +74,7 @@ describe("BaseSseAgent", () => {
     expect(events[0]).toEqual({ type: "token", token: "hel" });
     expect(events[1]).toEqual({ type: "token", token: "lo" });
     expect(events[2]).toEqual({ type: "tool_call", toolCall: { name: "test", arguments: "{}" } });
-    expect(events[3].type).toBe("done");
+    expect(events[3]!.type).toBe("done");
   });
 
   test("request accumulates tokens and returns final text", async () => {
@@ -132,18 +132,18 @@ describe("BaseSseAgent", () => {
     const agent = new TestBaseAgent();
 
     let fetchSignal: AbortSignal | undefined;
-    spyOn(globalThis, "fetch").mockImplementation(async (_: string | URL | Request, init?: RequestInit) => {
+    spyOn(globalThis, "fetch").mockImplementation((async (_: any, init?: any) => {
       fetchSignal = init?.signal as AbortSignal | undefined;
       // Return a never-resolving stream to simulate pending request
       return new Response(new ReadableStream(), { status: 200 });
-    });
+    }) as any);
 
     const streamPromise = agent.stream(sampleInput);
     // Give event loop a tick to initiate fetch
     await new Promise((r) => setTimeout(r, 0));
 
     const stream = await streamPromise;
-    expect(fetchSignal?.aborted).toBe(false);
+    expect(fetchSignal!.aborted).toBe(false);
 
     await agent.cancel(stream.requestId);
     expect(fetchSignal?.aborted).toBe(true);
