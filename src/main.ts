@@ -189,7 +189,7 @@ async function streamAgentTurn(
   let text = "";
   const toolCalls: AgentToolCall[] = [];
   let hadError = false;
-  const pendingUiUpdates: Promise<void>[] = [];
+  const pendingUiUpdates: Promise<unknown>[] = [];
 
   for await (const event of stream.events) {
     switch (event.type) {
