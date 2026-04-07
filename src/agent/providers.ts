@@ -45,7 +45,7 @@ class AsyncQueue<T> {
   }
 }
 
-abstract class BaseSseAgent implements AgentAdapter {
+export abstract class BaseSseAgent implements AgentAdapter {
   protected abstract buildRequest(input: AgentRequest, stream: boolean): { url: string; init: RequestInit };
   protected abstract parseChunk(payload: unknown): { token?: string; done?: boolean; toolCall?: AgentToolCall; finalText?: string };
 
