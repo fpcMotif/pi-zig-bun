@@ -26,16 +26,16 @@ export async function loadSkills(
     // Reserved for future UI/event hooks.
   };
 
-  for (const root of searchRoots) {
+  const loadPromises = searchRoots.map(async (root) => {
     try {
       const dirEntries = await readdir(root, { withFileTypes: true, recursive: false }).catch(() => null);
       if (!dirEntries) {
-        continue;
+        return;
       }
 
-      for (const entry of dirEntries) {
+      const promises = dirEntries.map(async (entry) => {
         if (!entry.isFile() || !entry.name.endsWith(".ts")) {
-          continue;
+          return;
         }
 
         const fullPath = path.join(root, entry.name);
@@ -47,7 +47,7 @@ export async function loadSkills(
           const skill = moduleValue as SkillModule;
 
           if (!skill || typeof skill.register !== "function") {
-            continue;
+            return;
           }
 
           const ctx: SkillContext = {
@@ -68,11 +68,15 @@ export async function loadSkills(
           result.failed += 1;
           result.errors.push(`Failed to load ${fullPath}: ${(err as Error).message}`);
         }
-      }
+      });
+
+      await Promise.all(promises);
     } catch {
       // ignore invalid directories
     }
-  }
+  });
+
+  await Promise.all(loadPromises);
 
   return result;
 }
