@@ -68,7 +68,7 @@ async function runSessionCommand(runtime: AppRuntime, sessionId: string | undefi
 
 function runLoginCommand(json: boolean): number {
   const msg = { ok: false, command: "/login", code: "NOT_SUPPORTED", message: "Login/auth setup is not implemented yet in pi-zig-bun." };
-  console.log(json ? JSON.stringify(msg) : msg.message);
+  process.stdout.write((json ? JSON.stringify(msg) : msg.message) + '\n');
   return 0;
 }
 
