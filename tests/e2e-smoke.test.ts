@@ -70,10 +70,10 @@ describe("e2e smoke: search + grep + tree", () => {
     const logSpy = mock(() => {});
     const errSpy = mock(() => {});
 
-    const originalLog = console.log;
-    const originalErr = console.error;
-    console.log = logSpy as typeof console.log;
-    console.error = errSpy as typeof console.error;
+    const originalLog = process.stdout.write;
+    const originalErr = process.stderr.write;
+    process.stdout.write = logSpy as typeof process.stdout.write;
+    process.stderr.write = errSpy as typeof process.stderr.write;
 
     try {
       const searchCode = await runOrThrow(["--cwd", ctx.root, "search", "needle"], ctx.root);
@@ -90,8 +90,8 @@ describe("e2e smoke: search + grep + tree", () => {
       expect(output).toContain("Session heads:");
       expect(errSpy.mock.calls.length).toBe(0);
     } finally {
-      console.log = originalLog;
-      console.error = originalErr;
+      process.stdout.write = originalLog;
+      process.stderr.write = originalErr;
       await ctx.cleanup();
     }
   });
@@ -101,10 +101,10 @@ describe("e2e smoke: search + grep + tree", () => {
     const logSpy = mock(() => {});
     const errSpy = mock(() => {});
 
-    const originalLog = console.log;
-    const originalErr = console.error;
-    console.log = logSpy as typeof console.log;
-    console.error = errSpy as typeof console.error;
+    const originalLog = process.stdout.write;
+    const originalErr = process.stderr.write;
+    process.stdout.write = logSpy as any;
+    process.stderr.write = errSpy as any;
 
     try {
       const sessionUsageCode = await runOrThrow(["--cwd", ctx.root, "session"], ctx.root);
@@ -121,8 +121,8 @@ describe("e2e smoke: search + grep + tree", () => {
       expect(output).toContain('"code":"NOT_SUPPORTED"');
       expect(errSpy.mock.calls.length).toBe(0);
     } finally {
-      console.log = originalLog;
-      console.error = originalErr;
+      process.stdout.write = originalLog;
+      process.stderr.write = originalErr;
       await ctx.cleanup();
     }
   });

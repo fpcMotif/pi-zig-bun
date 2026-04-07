@@ -21,31 +21,52 @@ interface AppRuntime {
   workspaceRoot: string;
 }
 
+function logOut(msg: string): void {
+  process.stdout.write(msg + "\n");
+}
+
+function logErr(msg: string | Error | unknown): void {
+  const str = msg instanceof Error ? msg.message : String(msg);
+  process.stderr.write(str + "\n");
+}
+
 function requireSessionAccess(runtime: AppRuntime, sessionId: string): void {
   runtime.capabilities.require("session.access", sessionId);
 }
 
-function printSessionHeads(heads: Awaited<ReturnType<SessionTree["tree"]>>, json: boolean): void {
+function printSessionHeads(
+  heads: Awaited<ReturnType<SessionTree["tree"]>>,
+  json: boolean,
+): void {
   if (json) {
-    console.log(JSON.stringify(heads, null, 2));
+    logOut(JSON.stringify(heads, null, 2));
     return;
   }
 
-  console.log(`Session heads: ${heads.length}`);
+  logOut(`Session heads: ${heads.length}`);
   for (const head of heads) {
-    console.log(`${head.id} | parent=${head.parentId ?? "<root>"} | ${head.createdAt}`);
+    logOut(
+      `${head.id} | parent=${head.parentId ?? "<root>"} | ${head.createdAt}`,
+    );
   }
 }
 
-async function runTreeCommand(runtime: AppRuntime, json: boolean): Promise<number> {
+async function runTreeCommand(
+  runtime: AppRuntime,
+  json: boolean,
+): Promise<number> {
   const heads = await runtime.sessionTree.tree();
   printSessionHeads(heads, json);
   return 0;
 }
 
-async function runSessionCommand(runtime: AppRuntime, sessionId: string | undefined, json: boolean): Promise<number> {
+async function runSessionCommand(
+  runtime: AppRuntime,
+  sessionId: string | undefined,
+  json: boolean,
+): Promise<number> {
   if (!sessionId) {
-    console.log("Session subcommand usage: session --root-session <id>");
+    logOut("Session subcommand usage: session --root-session <id>");
     return 1;
   }
 
@@ -54,21 +75,26 @@ async function runSessionCommand(runtime: AppRuntime, sessionId: string | undefi
   if (!turn) {
     const message = `Session not found: ${sessionId}`;
     if (json) {
-      console.log(JSON.stringify({ ok: false, error: message, sessionId }, null, 2));
+      logOut(JSON.stringify({ ok: false, error: message, sessionId }, null, 2));
     } else {
-      console.log(message);
+      logOut(message);
     }
     return 1;
   }
 
   const history = await runtime.sessionTree.history(sessionId);
-  console.log(JSON.stringify(history, null, 2));
+  logOut(JSON.stringify(history, null, 2));
   return 0;
 }
 
 function runLoginCommand(json: boolean): number {
-  const msg = { ok: false, command: "/login", code: "NOT_SUPPORTED", message: "Login/auth setup is not implemented yet in pi-zig-bun." };
-  console.log(json ? JSON.stringify(msg) : msg.message);
+  const msg = {
+    ok: false,
+    command: "/login",
+    code: "NOT_SUPPORTED",
+    message: "Login/auth setup is not implemented yet in pi-zig-bun.",
+  };
+  logOut(json ? JSON.stringify(msg) : msg.message);
   return 0;
 }
 
@@ -78,44 +104,70 @@ function registerBuiltinTools(registry: MemoryToolRegistry): void {
   }
 }
 
-function toAgentMessages(turns: Awaited<ReturnType<SessionTree["history"]>>): AgentMessage[] {
+function toAgentMessages(
+  turns: Awaited<ReturnType<SessionTree["history"]>>,
+): AgentMessage[] {
   return turns
-    .filter((turn) => turn.role === "system" || turn.role === "user" || turn.role === "assistant")
+    .filter(
+      (turn) =>
+        turn.role === "system" ||
+        turn.role === "user" ||
+        turn.role === "assistant",
+    )
     .map((turn) => ({ role: turn.role, content: turn.content }));
 }
 
-async function runSearchCommand(runtime: AppRuntime, query: string, limit: number, json: boolean): Promise<void> {
-  const response = await runtime.search.searchFiles(query, { limit, cwd: runtime.workspaceRoot, includeScores: true });
+async function runSearchCommand(
+  runtime: AppRuntime,
+  query: string,
+  limit: number,
+  json: boolean,
+): Promise<void> {
+  const response = await runtime.search.searchFiles(query, {
+    limit,
+    cwd: runtime.workspaceRoot,
+    includeScores: true,
+  });
   if (json) {
-    console.log(JSON.stringify(response));
+    logOut(JSON.stringify(response));
     return;
   }
 
   if (response.results.length === 0) {
-    console.log(`No matches for \"${query}\"`);
+    logOut(`No matches for \"${query}\"`);
     return;
   }
 
   for (const item of response.results) {
-    console.log(`${item.score.toString().padStart(4)}  ${item.path}  (${item.matchType})`);
+    logOut(
+      `${item.score.toString().padStart(4)}  ${item.path}  (${item.matchType})`,
+    );
   }
 }
 
-async function runGrepCommand(runtime: AppRuntime, query: string, limit: number, json: boolean): Promise<void> {
-  const response = await runtime.search.grep(query, { limit, cwd: runtime.workspaceRoot });
+async function runGrepCommand(
+  runtime: AppRuntime,
+  query: string,
+  limit: number,
+  json: boolean,
+): Promise<void> {
+  const response = await runtime.search.grep(query, {
+    limit,
+    cwd: runtime.workspaceRoot,
+  });
   if (json) {
-    console.log(JSON.stringify(response));
+    logOut(JSON.stringify(response));
     return;
   }
 
   if (response.matches.length === 0) {
-    console.log(`No grep hits for \"${query}\"`);
+    logOut(`No grep hits for \"${query}\"`);
     return;
   }
 
   for (const hit of response.matches) {
     const lineText = hit.text.trimEnd();
-    console.log(`${hit.path}:${hit.line}:${hit.column + 1}  ${lineText}`);
+    logOut(`${hit.path}:${hit.line}:${hit.column + 1}  ${lineText}`);
   }
 }
 
@@ -156,7 +208,8 @@ async function executeToolCall(
   if (!toolExecutionEnabled) {
     return JSON.stringify({
       ok: false,
-      error: "Tool execution is disabled until an explicit .pi/policy.json is configured.",
+      error:
+        "Tool execution is disabled until an explicit .pi/policy.json is configured.",
     });
   }
 
@@ -164,15 +217,23 @@ async function executeToolCall(
   try {
     parsedArgs = JSON.parse(toolCall.arguments);
   } catch {
-    const truncatedArgs = toolCall.arguments.length > 200
-      ? `${toolCall.arguments.slice(0, 200)}...(truncated)`
-      : toolCall.arguments;
-    return JSON.stringify({ ok: false, error: `Invalid JSON arguments: ${truncatedArgs}` });
+    const truncatedArgs =
+      toolCall.arguments.length > 200
+        ? `${toolCall.arguments.slice(0, 200)}...(truncated)`
+        : toolCall.arguments;
+    return JSON.stringify({
+      ok: false,
+      error: `Invalid JSON arguments: ${truncatedArgs}`,
+    });
   }
 
   try {
     const ctx = buildToolContext(capabilities, cwd);
-    const result = await registry.run<ToolResult>(toolCall.name, parsedArgs, ctx);
+    const result = await registry.run<ToolResult>(
+      toolCall.name,
+      parsedArgs,
+      ctx,
+    );
     return JSON.stringify(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -203,7 +264,11 @@ async function streamAgentTurn(
       case "token":
         text += event.token;
         tui.writeToken(event.token);
-        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "token", token: event.token });
+        await runtime.search.uiUpdate({
+          turnId: currentTurn,
+          kind: "token",
+          token: event.token,
+        });
         break;
 
       case "tool_call":
@@ -219,7 +284,12 @@ async function streamAgentTurn(
 
       case "error":
         tui.writeError(event.error);
-        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "error", message: event.error, done: true });
+        await runtime.search.uiUpdate({
+          turnId: currentTurn,
+          kind: "error",
+          message: event.error,
+          done: true,
+        });
         hadError = true;
         break;
 
@@ -227,11 +297,19 @@ async function streamAgentTurn(
         text = event.response.text || text;
         // Merge any tool calls that came in the done event but weren't streamed individually
         for (const tc of event.response.toolCalls) {
-          if (!toolCalls.some((existing) => existing.id === tc.id && existing.name === tc.name)) {
+          if (
+            !toolCalls.some(
+              (existing) => existing.id === tc.id && existing.name === tc.name,
+            )
+          ) {
             toolCalls.push(tc);
           }
         }
-        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "done", done: true });
+        await runtime.search.uiUpdate({
+          turnId: currentTurn,
+          kind: "done",
+          done: true,
+        });
         break;
     }
 
@@ -267,7 +345,10 @@ function buildAssistantToolCallMessage(
 /**
  * Build a tool-result message for a single tool call.
  */
-function buildToolResultMessage(toolCallId: string, resultContent: string): AgentMessage {
+function buildToolResultMessage(
+  toolCallId: string,
+  resultContent: string,
+): AgentMessage {
   return {
     role: "tool",
     content: resultContent,
@@ -290,7 +371,10 @@ async function runInteractive(
     prompt: tui.promptString(),
   });
 
-  const root = await runtime.sessionTree.createRoot("system", "interactive session");
+  const root = await runtime.sessionTree.createRoot(
+    "system",
+    "interactive session",
+  );
   let currentTurn = root.id;
   const agent = createAgentFromEnv();
   const cwd = runtime.workspaceRoot;
@@ -309,7 +393,7 @@ async function runInteractive(
     }
 
     if (trimmed === "/help") {
-      console.log(usage());
+      logOut(usage());
       iface.prompt();
       continue;
     }
@@ -323,13 +407,15 @@ async function runInteractive(
     if (trimmed.startsWith("/search ")) {
       const query = trimmed.slice("/search ".length).trim();
       await runSearchCommand(runtime, query, 100, false);
-      currentTurn = (await runtime.sessionTree.fork(currentTurn, "user", `/search ${query}`)).id;
+      currentTurn = (
+        await runtime.sessionTree.fork(currentTurn, "user", `/search ${query}`)
+      ).id;
       iface.prompt();
       continue;
     }
 
     if (trimmed === "/login") {
-      console.log("Login/auth setup is not implemented yet in pi-zig-bun.");
+      logOut("Login/auth setup is not implemented yet in pi-zig-bun.");
       iface.prompt();
       continue;
     }
@@ -337,15 +423,25 @@ async function runInteractive(
     if (trimmed.startsWith("/grep ")) {
       const query = trimmed.slice("/grep ".length).trim();
       await runGrepCommand(runtime, query, 200, false);
-      currentTurn = (await runtime.sessionTree.fork(currentTurn, "user", `/grep ${query}`)).id;
+      currentTurn = (
+        await runtime.sessionTree.fork(currentTurn, "user", `/grep ${query}`)
+      ).id;
       iface.prompt();
       continue;
     }
 
     // ---- Begin agent turn with tool-call loop ----
-    const userTurn = await runtime.sessionTree.fork(currentTurn, "user", trimmed);
+    const userTurn = await runtime.sessionTree.fork(
+      currentTurn,
+      "user",
+      trimmed,
+    );
     currentTurn = userTurn.id;
-    await runtime.search.uiInput({ turnId: currentTurn, text: trimmed, metadata: { source: "interactive" } });
+    await runtime.search.uiInput({
+      turnId: currentTurn,
+      text: trimmed,
+      metadata: { source: "interactive" },
+    });
 
     const history = await runtime.sessionTree.history(currentTurn);
     const messages: AgentMessage[] = toAgentMessages(history);
@@ -368,7 +464,13 @@ async function runInteractive(
         tui.writeAssistantPrefix();
       }
 
-      const turn = await streamAgentTurn(agent, messages, runtime, currentTurn, tui);
+      const turn = await streamAgentTurn(
+        agent,
+        messages,
+        runtime,
+        currentTurn,
+        tui,
+      );
 
       if (turn.hadError) {
         lastText = turn.text;
@@ -382,14 +484,22 @@ async function runInteractive(
       }
 
       // Agent requested tool calls -- execute each one and feed results back
-      const assistantMsg = buildAssistantToolCallMessage(turn.text, turn.toolCalls);
+      const assistantMsg = buildAssistantToolCallMessage(
+        turn.text,
+        turn.toolCalls,
+      );
       messages.push(assistantMsg);
 
       const usedToolCallIds = new Set<string>();
       for (const tc of turn.toolCalls) {
-        const toolCallId = tc.id ?? assistantMsg.tool_calls!.find(
-          (w) => w.function.name === tc.name && w.function.arguments === tc.arguments && !usedToolCallIds.has(w.id),
-        )!.id;
+        const toolCallId =
+          tc.id ??
+          assistantMsg.tool_calls!.find(
+            (w) =>
+              w.function.name === tc.name &&
+              w.function.arguments === tc.arguments &&
+              !usedToolCallIds.has(w.id),
+          )!.id;
         usedToolCallIds.add(toolCallId);
 
         tui.writeToolExecution(tc.name);
@@ -423,7 +533,11 @@ async function runInteractive(
 
     // Persist the final assistant text into the session tree
     const finalText = lastText.trim() || "(tool-only response)";
-    const assistantTurn = await runtime.sessionTree.fork(currentTurn, "assistant", finalText);
+    const assistantTurn = await runtime.sessionTree.fork(
+      currentTurn,
+      "assistant",
+      finalText,
+    );
     currentTurn = assistantTurn.id;
     tui.writeNewline();
     iface.prompt();
@@ -433,11 +547,13 @@ async function runInteractive(
   iface.close();
 }
 
-export async function run(argv: string[] = process.argv.slice(2)): Promise<number> {
+export async function run(
+  argv: string[] = process.argv.slice(2),
+): Promise<number> {
   const args = parseCli(argv);
 
   if (args.help) {
-    console.log(usage());
+    logOut(usage());
     return 0;
   }
 
@@ -476,7 +592,7 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
     switch (args.command) {
       case "search": {
         if (!args.query) {
-          console.error("search requires <query>");
+          logErr("search requires <query>");
           return 2;
         }
         await runSearchCommand(runtime, args.query, args.limit, args.json);
@@ -484,7 +600,7 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
       }
       case "grep": {
         if (!args.query) {
-          console.error("grep requires <query>");
+          logErr("grep requires <query>");
           return 2;
         }
         await runGrepCommand(runtime, args.query, args.limit, args.json);
@@ -499,7 +615,13 @@ export async function run(argv: string[] = process.argv.slice(2)): Promise<numbe
         return runLoginCommand(args.json);
       case "interactive":
       default: {
-        await runInteractive(runtime, registry, capabilities, hasExplicitPolicy, args.json);
+        await runInteractive(
+          runtime,
+          registry,
+          capabilities,
+          hasExplicitPolicy,
+          args.json,
+        );
         return 0;
       }
     }
@@ -514,7 +636,7 @@ if (import.meta.main) {
       process.exit(code);
     },
     (err) => {
-      console.error(err);
+      logErr(err);
       process.exit(1);
     },
   );
