@@ -7,7 +7,7 @@ import type { AgentRequest, AgentToolCall } from "../src/agent/types";
 // BaseSseAgent
 // ---------------------------------------------------------------------------
 class TestBaseAgent extends BaseSseAgent {
-  public chunksToReturn: Array<{ token?: string; toolCall?: AgentToolCall; done?: boolean }> = [];
+  public chunksToReturn: Array<{ token?: string; toolCall?: AgentToolCall; done?: boolean; finalText?: string }> = [];
   private parseCount = 0;
 
   protected buildRequest(input: AgentRequest, stream: boolean): { url: string; init: RequestInit } {
@@ -42,7 +42,7 @@ describe("BaseSseAgent", () => {
         controller.close();
       },
     });
-    const mockResponse = new Response(stream, { status: 200, ok: true });
+    const mockResponse = new Response(stream, { status: 200 });
     spyOn(globalThis, "fetch").mockResolvedValue(mockResponse as any);
   }
 
@@ -98,7 +98,8 @@ describe("BaseSseAgent", () => {
 
   test("stream throws on non-200 upstream error", async () => {
     const agent = new TestBaseAgent();
-    const mockResponse = new Response("Bad Request", { status: 400, ok: false });
+    const mockResponse = new Response("Bad Request", { status: 400 });
+    Object.defineProperty(mockResponse, 'ok', { value: false });
     spyOn(globalThis, "fetch").mockResolvedValue(mockResponse as any);
 
     await expect(agent.stream(sampleInput)).rejects.toThrow("Upstream error 400: Bad Request");
@@ -131,10 +132,10 @@ describe("BaseSseAgent", () => {
     const agent = new TestBaseAgent();
 
     let fetchSignal: AbortSignal | undefined;
-    spyOn(globalThis, "fetch").mockImplementation(async (_, init) => {
-      fetchSignal = (init as any)?.signal;
+    spyOn(globalThis, "fetch").mockImplementation(async (_: string | URL | Request, init?: RequestInit) => {
+      fetchSignal = init?.signal as AbortSignal | undefined;
       // Return a never-resolving stream to simulate pending request
-      return new Response(new ReadableStream(), { status: 200, ok: true });
+      return new Response(new ReadableStream(), { status: 200 });
     });
 
     const streamPromise = agent.stream(sampleInput);
