@@ -1,6 +1,7 @@
 import type { UiAck, UiInputParams, UiUpdateParams } from "../rpc/types";
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
+import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -46,6 +47,7 @@ export class SearchBridge {
   private nextRequestId = 1;
   private pending = new Map<RpcId, PendingCall>();
   private started = false;
+  private stderrTask: Promise<void> = Promise.resolve();
 
   private scrub(text: string): string {
     const paths = [
@@ -118,15 +120,18 @@ export class SearchBridge {
 
     if (this.proc.stderr) {
       this.proc.stderr.on("data", (chunk) => {
-        try {
-          // Re-create the directory if it was deleted concurrently before logging.
-          if (!existsSync(piDir)) {
-            mkdirSync(piDir, { recursive: true });
+        const text = chunk.toString();
+        this.stderrTask = this.stderrTask.then(async () => {
+          try {
+            // Re-create the directory if it was deleted concurrently before logging.
+            await mkdir(piDir, { recursive: true }).catch((err) => {
+              if (err.code !== "EEXIST") throw err;
+            });
+            await appendFile(stderrLog, this.scrub(text));
+          } catch {
+            // ignore logging errors to prevent breaking the bridge
           }
-          appendFileSync(stderrLog, this.scrub(chunk.toString()));
-        } catch {
-          // ignore logging errors to prevent breaking the bridge
-        }
+        });
       });
     }
 
@@ -186,6 +191,7 @@ export class SearchBridge {
     }
     this.pending.clear();
     await closePromise;
+    await this.stderrTask;
   }
 
   private write(payload: RpcRequest): void {
