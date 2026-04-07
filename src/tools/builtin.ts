@@ -326,10 +326,14 @@ export const bashTool: Tool<BashToolInput, ToolResult> = {
 
     ctx.capabilities.require("fs.execute", capabilityTarget);
 
-    const safeEnv = { ...process.env };
-    for (const key of Object.keys(safeEnv)) {
-      if (/(API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS)/i.test(key)) {
-        delete safeEnv[key];
+    const allowedEnvKeys = [
+      "PATH", "HOME", "USER", "LOGNAME", "SHELL", "PWD", "TERM",
+      "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES"
+    ];
+    const safeEnv: Record<string, string> = {};
+    for (const key of allowedEnvKeys) {
+      if (process.env[key] !== undefined) {
+        safeEnv[key] = process.env[key];
       }
     }
 
