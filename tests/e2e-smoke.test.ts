@@ -72,8 +72,10 @@ describe("e2e smoke: search + grep + tree", () => {
 
     const originalLog = console.log;
     const originalErr = console.error;
+    const originalStdoutWrite = process.stdout.write;
     console.log = logSpy as typeof console.log;
     console.error = errSpy as typeof console.error;
+    process.stdout.write = ((msg: string) => { logSpy(msg); return true; }) as any;
 
     try {
       const searchCode = await runOrThrow(["--cwd", ctx.root, "search", "needle"], ctx.root);
@@ -92,6 +94,7 @@ describe("e2e smoke: search + grep + tree", () => {
     } finally {
       console.log = originalLog;
       console.error = originalErr;
+      process.stdout.write = originalStdoutWrite;
       await ctx.cleanup();
     }
   });
@@ -103,8 +106,10 @@ describe("e2e smoke: search + grep + tree", () => {
 
     const originalLog = console.log;
     const originalErr = console.error;
+    const originalStdoutWrite = process.stdout.write;
     console.log = logSpy as typeof console.log;
     console.error = errSpy as typeof console.error;
+    process.stdout.write = ((msg: string) => { logSpy(msg); return true; }) as any;
 
     try {
       const sessionUsageCode = await runOrThrow(["--cwd", ctx.root, "session"], ctx.root);
