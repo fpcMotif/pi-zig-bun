@@ -218,6 +218,38 @@ describe("writeTool", () => {
     }
   });
 
+  test("throws and closes file handle when writeFile fails", async () => {
+    let closed = false;
+    const filePath = path.join(tmpDir, "mocked.txt");
+    await writeFile(filePath, "initial");
+
+    // The fs check uses realpath, stat, etc. We just mock open since the others succeed.
+    // The symlink check in ensureNoSymlinkEscape compares fs.realpath with handle.stat()
+    const realStat = await fsPromises.stat(filePath);
+
+    const openSpy = spyOn(fsPromises, "open").mockImplementation(async () => {
+      return {
+        stat: async () => realStat,
+        writeFile: async () => { throw new Error("ENOSPC: no space left on device"); },
+        close: async () => { closed = true; },
+        truncate: async () => {}
+      } as any;
+    });
+
+    try {
+      await expect(
+        writeTool.execute(makeCtx(tmpDir), {
+          path: filePath,
+          content: "content",
+          overwrite: true,
+        }),
+      ).rejects.toThrow("ENOSPC");
+      expect(closed).toBe(true);
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
   test("rethrows other errors during open even when overwrite is false", async () => {
     const openSpy = spyOn(fsPromises, "open").mockImplementation(async () => {
       const err = new Error("EACCES: permission denied") as any;
