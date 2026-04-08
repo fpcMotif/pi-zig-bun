@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { CapabilityManager, loadPolicyFile } from "../src/permissions";
+import { CapabilityManager, loadPolicyFile, type CapabilityPolicy } from "../src/permissions";
 
 async function withTempWorkspace<T>(run: (root: string) => Promise<T>): Promise<T> {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-policy-"));
@@ -106,7 +106,7 @@ describe("loadPolicyFile", () => {
   test("parses all valid capability keys simultaneously", async () => {
     await withTempWorkspace(async (root) => {
       const policyPath = path.join(root, "policy.json");
-      const fullPolicy = {
+      const fullPolicy: CapabilityPolicy = {
         "fs.read": ["src/**"],
         "fs.write": ["tmp/**"],
         "fs.execute": "*",
