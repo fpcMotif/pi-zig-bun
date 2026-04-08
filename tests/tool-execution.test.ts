@@ -634,3 +634,20 @@ describe("MemoryToolRegistry edge cases", () => {
     ).rejects.toThrow("Tool undefined-resolver-tool requires capability net.http but no resolver was provided.");
   });
 });
+
+// ---------------------------------------------------------------------------
+// builtinTools
+// ---------------------------------------------------------------------------
+describe("builtinTools", () => {
+  test("contains exactly the expected tools in the correct order", async () => {
+    const { builtinTools, readTool, writeTool, editTool, bashTool } = await import("../src/tools/builtin");
+
+    expect(builtinTools).toBeInstanceOf(Array);
+    expect(builtinTools).toHaveLength(4);
+
+    expect(builtinTools[0]).toBe(readTool);
+    expect(builtinTools[1]).toBe(writeTool);
+    expect(builtinTools[2]).toBe(editTool);
+    expect(builtinTools[3]).toBe(bashTool);
+  });
+});
