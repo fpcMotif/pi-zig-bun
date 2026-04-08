@@ -359,20 +359,23 @@ describe("bashTool", () => {
     expect(result.output!.trim()).toBe("hello");
   });
 
-  test("filters out sensitive environment variables", async () => {
+  test("uses a strict environment allowlist", async () => {
     process.env.TEST_API_KEY = "secret123";
     process.env.SAFE_VAR = "public456";
+    process.env.LANG = "en_US.UTF-8";
+
     const result = (await bashTool.execute(makeCtx(tmpDir), {
-      command: "if [[ -n ${TEST_API_KEY-} ]]; then printf 'TEST_API_KEY=%s\\n' \"$TEST_API_KEY\"; fi; if [[ -n ${SAFE_VAR-} ]]; then printf 'SAFE_VAR=%s\\n' \"$SAFE_VAR\"; fi",
+      command: "env",
     })) as ToolResult;
 
     expect(result.ok).toBe(true);
-    expect(result.output).not.toContain("TEST_API_KEY");
-    expect(result.output).not.toContain("secret123");
-    expect(result.output).toContain("SAFE_VAR=public456");
+    expect(result.output).not.toContain("TEST_API_KEY=");
+    expect(result.output).not.toContain("SAFE_VAR=");
+    expect(result.output).toContain("LANG=en_US.UTF-8");
 
     delete process.env.TEST_API_KEY;
     delete process.env.SAFE_VAR;
+    delete process.env.LANG;
   });
 
   test("executes within the context cwd", async () => {

@@ -183,7 +183,7 @@ const READ_CAPABILITIES: Capability[] = ["fs.read"];
 const WRITE_CAPABILITIES: Capability[] = ["fs.write"];
 const EDIT_CAPABILITIES: Capability[] = ["fs.read", "fs.write"];
 const BASH_CAPABILITIES: Capability[] = ["fs.execute"];
-const BASH_EXECUTABLE = process.platform === "win32" ? "bash" : "/bin/bash";
+const BASH_EXECUTABLE = process.platform === "win32" ? "bash" : "bash";
 
 export const readTool: Tool<ReadToolInput, ToolResult> = {
   id: "read",
@@ -326,10 +326,24 @@ export const bashTool: Tool<BashToolInput, ToolResult> = {
 
     ctx.capabilities.require("fs.execute", capabilityTarget);
 
-    const safeEnv = { ...process.env };
-    for (const key of Object.keys(safeEnv)) {
-      if (/(API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS)/i.test(key)) {
-        delete safeEnv[key];
+    const ALLOWED_ENV_VARS = new Set([
+      "PATH",
+      "HOME",
+      "USER",
+      "LOGNAME",
+      "SHELL",
+      "PWD",
+      "TERM",
+      "LANG",
+      "LC_ALL",
+      "LC_CTYPE",
+      "LC_MESSAGES",
+    ]);
+
+    const safeEnv: Record<string, string> = {};
+    for (const key of Object.keys(process.env)) {
+      if (ALLOWED_ENV_VARS.has(key) && process.env[key] !== undefined) {
+        safeEnv[key] = process.env[key] as string;
       }
     }
 
