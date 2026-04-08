@@ -146,13 +146,7 @@ export class SessionStore {
 
   public async stats(): Promise<SessionTreeStats> {
     const turns = await this.allTurns();
-    let roots = 0;
-    for (const turn of turns) {
-      if (!turn.parentId) {
-        roots++;
-      }
-    }
-    return { roots, turns: turns.length };
+    return { roots: turns.filter(t => !t.parentId).length, turns: turns.length };
   }
 }
 
