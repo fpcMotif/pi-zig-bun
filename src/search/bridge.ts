@@ -1,6 +1,7 @@
 import type { UiAck, UiInputParams, UiUpdateParams } from "../rpc/types";
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { appendFile, mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -47,18 +48,13 @@ export class SearchBridge {
   private pending = new Map<RpcId, PendingCall>();
   private started = false;
   private currentLogSize = 0;
+  private readonly scrubbedPaths: { path: string; replacement: string }[];
+  private stderrTask: Promise<void> = Promise.resolve();
 
   private scrub(text: string): string {
-    const paths = [
-      { path: this.binaryPath, replacement: "[BINARY_PATH]" },
-      { path: this.workspaceRoot, replacement: "[WORKSPACE_ROOT]" },
-    ].sort((left, right) => right.path.length - left.path.length);
-
     let scrubbed = text;
-    for (const { path, replacement } of paths) {
-      if (path) {
-        scrubbed = scrubbed.split(path).join(replacement);
-      }
+    for (const { path, replacement } of this.scrubbedPaths) {
+      scrubbed = scrubbed.split(path).join(replacement);
     }
 
     return scrubbed;
@@ -68,6 +64,12 @@ export class SearchBridge {
     this.workspaceRoot = options.workspaceRoot ?? process.cwd();
     this.requestTimeoutMs = options.requestTimeoutMs ?? 30_000;
     this.binaryPath = this.resolveBinary(options.binaryPath);
+    this.scrubbedPaths = [
+      { path: this.binaryPath, replacement: "[BINARY_PATH]" },
+      { path: this.workspaceRoot, replacement: "[WORKSPACE_ROOT]" },
+    ]
+      .filter((p) => p.path)
+      .sort((left, right) => right.path.length - left.path.length);
   }
 
   private resolveBinary(explicit?: string): string {
@@ -113,14 +115,14 @@ export class SearchBridge {
     // We shouldn't fail fatally if the root directory is wiped while bridge runs.
     // Ensure the directory exists initially.
     const piDir = path.join(this.workspaceRoot, ".pi");
-    mkdirSync(piDir, { recursive: true });
+    await mkdir(piDir, { recursive: true });
 
     const stderrLog = path.join(piDir, "search-bridge.stderr.log");
     const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
 
     try {
       if (existsSync(stderrLog)) {
-        const stats = statSync(stderrLog);
+        const stats = await stat(stderrLog);
         this.currentLogSize = stats.size;
       } else {
         this.currentLogSize = 0;
@@ -131,26 +133,25 @@ export class SearchBridge {
 
     if (this.proc.stderr) {
       this.proc.stderr.on("data", (chunk) => {
-        try {
-          // Re-create the directory if it was deleted concurrently before logging.
-          if (!existsSync(piDir)) {
-            mkdirSync(piDir, { recursive: true });
-          }
+        const text = this.scrub(chunk.toString());
+        const byteLength = Buffer.byteLength(text, "utf8");
+        this.stderrTask = this.stderrTask
+          .then(async () => {
+            // Re-create the directory if it was deleted concurrently before logging.
+            await mkdir(piDir, { recursive: true });
 
-          const text = this.scrub(chunk.toString());
-          const byteLength = Buffer.byteLength(text, "utf8");
-
-          if (this.currentLogSize + byteLength > MAX_LOG_SIZE) {
-            const marker = "\n[LOG TRUNCATED DUE TO SIZE LIMIT]\n";
-            writeFileSync(stderrLog, marker + text);
-            this.currentLogSize = Buffer.byteLength(marker + text, "utf8");
-          } else {
-            appendFileSync(stderrLog, text);
-            this.currentLogSize += byteLength;
-          }
-        } catch {
-          // ignore logging errors to prevent breaking the bridge
-        }
+            if (this.currentLogSize + byteLength > MAX_LOG_SIZE) {
+              const marker = "\n[LOG TRUNCATED DUE TO SIZE LIMIT]\n";
+              await writeFile(stderrLog, marker + text);
+              this.currentLogSize = Buffer.byteLength(marker + text, "utf8");
+            } else {
+              await appendFile(stderrLog, text);
+              this.currentLogSize += byteLength;
+            }
+          })
+          .catch(() => {
+            // ignore logging errors to prevent breaking the bridge
+          });
       });
     }
 
@@ -209,6 +210,7 @@ export class SearchBridge {
       call.reject(new Error("search bridge stopped"));
     }
     this.pending.clear();
+    await this.stderrTask;
     await closePromise;
   }
 
