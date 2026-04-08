@@ -4,6 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import { CapabilityManager, loadPolicyFile } from "../src/permissions";
 
+async function withTempWorkspace<T>(run: (root: string) => Promise<T>): Promise<T> {
+  const root = await mkdtemp(path.join(os.tmpdir(), "pi-policy-"));
+  try {
+    return await run(root);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 describe("CapabilityManager glob and transitions", () => {
   test("supports single-star and double-star semantics", () => {
     const manager = new CapabilityManager({
@@ -63,30 +72,23 @@ describe("loadPolicyFile", () => {
   });
 
   test("throws when policy JSON is invalid", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "pi-policy-"));
-    try {
+    await withTempWorkspace(async (root) => {
       const policyPath = path.join(root, "policy.json");
       await writeFile(policyPath, "{not-json", "utf8");
       await expect(loadPolicyFile(policyPath)).rejects.toThrow();
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+    });
   });
 
   test("throws when policy JSON is not an object", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "pi-policy-"));
-    try {
+    await withTempWorkspace(async (root) => {
       const policyPath = path.join(root, "policy.json");
       await writeFile(policyPath, JSON.stringify(["fs.read"]), "utf8");
       await expect(loadPolicyFile(policyPath)).rejects.toThrow("policy.json must be a JSON object");
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+    });
   });
 
   test("parses wildcard and array capability entries", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "pi-policy-"));
-    try {
+    await withTempWorkspace(async (root) => {
       const policyPath = path.join(root, "policy.json");
       await writeFile(policyPath, JSON.stringify({
         "fs.read": ["src/**"],
@@ -98,8 +100,48 @@ describe("loadPolicyFile", () => {
         "fs.read": ["src/**"],
         "fs.write": "*",
       });
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+    });
+  });
+
+  test("parses all valid capability keys simultaneously", async () => {
+    await withTempWorkspace(async (root) => {
+      const policyPath = path.join(root, "policy.json");
+      const fullPolicy = {
+        "fs.read": ["src/**"],
+        "fs.write": ["tmp/**"],
+        "fs.execute": "*",
+        "net.http": ["https://api.example.com/**"],
+        "session.access": "*",
+      };
+      await writeFile(policyPath, JSON.stringify(fullPolicy), "utf8");
+
+      expect(await loadPolicyFile(policyPath)).toEqual(fullPolicy);
+    });
+  });
+
+  test("ignores invalid values for valid keys", async () => {
+    await withTempWorkspace(async (root) => {
+      const policyPath = path.join(root, "policy.json");
+      const mixedPolicy = {
+        "fs.read": 123, // Invalid: number
+        "fs.write": { path: "tmp/**" }, // Invalid: object
+        "fs.execute": ["bin/sh", 456], // Invalid: array with non-string
+        "net.http": "*", // Valid
+        "session.access": "invalid-string", // Invalid: string but not "*"
+      };
+      await writeFile(policyPath, JSON.stringify(mixedPolicy), "utf8");
+
+      expect(await loadPolicyFile(policyPath)).toEqual({
+        "net.http": "*",
+      });
+    });
+  });
+
+  test("returns empty policy for empty JSON object", async () => {
+    await withTempWorkspace(async (root) => {
+      const policyPath = path.join(root, "policy.json");
+      await writeFile(policyPath, "{}", "utf8");
+      expect(await loadPolicyFile(policyPath)).toEqual({});
+    });
   });
 });
