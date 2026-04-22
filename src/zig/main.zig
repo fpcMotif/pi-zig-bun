@@ -698,11 +698,12 @@ fn levenshteinLimited(allocator: Allocator, a: []const u8, b: []const u8, max_di
 
     var prev_buf: [256]u16 = undefined;
     var curr_buf: [256]u16 = undefined;
+    const use_stack = b.len + 1 <= 256;
 
-    var prev: []u16 = if (b.len + 1 <= 256) prev_buf[0 .. b.len + 1] else allocator.alloc(u16, b.len + 1) catch return null;
-    defer if (b.len + 1 > 256) allocator.free(prev);
-    var curr: []u16 = if (b.len + 1 <= 256) curr_buf[0 .. b.len + 1] else allocator.alloc(u16, b.len + 1) catch return null;
-    defer if (b.len + 1 > 256) allocator.free(curr);
+    var prev: []u16 = if (use_stack) prev_buf[0 .. b.len + 1] else allocator.alloc(u16, b.len + 1) catch return null;
+    defer if (!use_stack) allocator.free(prev);
+    var curr: []u16 = if (use_stack) curr_buf[0 .. b.len + 1] else allocator.alloc(u16, b.len + 1) catch return null;
+    defer if (!use_stack) allocator.free(curr);
 
     for (0..b.len + 1) |j| prev[j] = @intCast(j);
 

@@ -183,7 +183,7 @@ const READ_CAPABILITIES: Capability[] = ["fs.read"];
 const WRITE_CAPABILITIES: Capability[] = ["fs.write"];
 const EDIT_CAPABILITIES: Capability[] = ["fs.read", "fs.write"];
 const BASH_CAPABILITIES: Capability[] = ["fs.execute"];
-const BASH_EXECUTABLE = process.platform === "win32" ? "bash" : "bash";
+const BASH_EXECUTABLE = process.platform === "win32" ? "bash" : "/bin/bash";
 
 export const readTool: Tool<ReadToolInput, ToolResult> = {
   id: "read",

@@ -197,30 +197,29 @@ async function streamAgentTurn(
   let text = "";
   const toolCalls: AgentToolCall[] = [];
   let hadError = false;
-  const pendingUiUpdates: Promise<unknown>[] = [];
 
   for await (const event of stream.events) {
     switch (event.type) {
       case "token":
         text += event.token;
         tui.writeToken(event.token);
-        pendingUiUpdates.push(runtime.search.uiUpdate({ turnId: currentTurn, kind: "token", token: event.token }));
+        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "token", token: event.token });
         break;
 
       case "tool_call":
         toolCalls.push(event.toolCall);
         tui.writeToolCall(event.toolCall.name, event.toolCall.arguments);
-        pendingUiUpdates.push(runtime.search.uiUpdate({
+        await runtime.search.uiUpdate({
           turnId: currentTurn,
           kind: "tool_call",
           message: `[tool_call ${event.toolCall.name}]`,
           meta: { tool: event.toolCall.name },
-        }));
+        });
         break;
 
       case "error":
         tui.writeError(event.error);
-        pendingUiUpdates.push(runtime.search.uiUpdate({ turnId: currentTurn, kind: "error", message: event.error, done: true }));
+        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "error", message: event.error, done: true });
         hadError = true;
         break;
 
@@ -232,7 +231,7 @@ async function streamAgentTurn(
             toolCalls.push(tc);
           }
         }
-        pendingUiUpdates.push(runtime.search.uiUpdate({ turnId: currentTurn, kind: "done", done: true }));
+        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "done", done: true });
         break;
     }
 
@@ -242,7 +241,6 @@ async function streamAgentTurn(
   }
 
   await stream.cancel();
-  await Promise.all(pendingUiUpdates);
   return { text, toolCalls, hadError };
 }
 
@@ -401,12 +399,18 @@ async function runInteractive(
           toolCallId = tc.id;
         } else {
           const key = `${tc.name}:${tc.arguments}`;
-          const ids = toolCallIdMap.get(key)!;
+          const ids = toolCallIdMap.get(key);
           let idx = toolCallUsageIndex.get(key) ?? 0;
-          while (idx < ids.length && usedToolCallIds.has(ids[idx]!)) {
+          while (ids && idx < ids.length && usedToolCallIds.has(ids[idx]!)) {
             idx++;
           }
-          toolCallId = ids[idx]!;
+          const matched = ids && idx < ids.length ? ids[idx]! : undefined;
+          if (!matched) {
+            throw new Error(
+              `Tool result has no matching assistant tool_call: name=${tc.name} arguments=${tc.arguments}`,
+            );
+          }
+          toolCallId = matched;
           toolCallUsageIndex.set(key, idx + 1);
         }
         usedToolCallIds.add(toolCallId);
