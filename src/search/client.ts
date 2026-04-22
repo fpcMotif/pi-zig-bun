@@ -213,20 +213,18 @@ export class SearchClient {
       limit: options.limit ?? 50,
       offset: options.offset ?? 0,
       cwd: options.cwd ?? this.currentWorkspace,
-      extFilter: options.extFilter,
-      pathFilter: options.pathFilter,
-      maxTypos: options.maxTypos,
       includeScores: options.includeScores ?? true,
-      fuzzyWeight: options.fuzzyWeight,
-      gitWeight: options.gitWeight,
-      frecencyWeight: options.frecencyWeight,
-      proximityWeight: options.proximityWeight,
     };
 
-    const response = await this.bridge.call<unknown>(
-      "search.files",
-      Object.fromEntries(Object.entries(params).filter((entry) => entry[1] !== undefined)),
-    );
+    if (options.extFilter !== undefined) params.extFilter = options.extFilter;
+    if (options.pathFilter !== undefined) params.pathFilter = options.pathFilter;
+    if (options.maxTypos !== undefined) params.maxTypos = options.maxTypos;
+    if (options.fuzzyWeight !== undefined) params.fuzzyWeight = options.fuzzyWeight;
+    if (options.gitWeight !== undefined) params.gitWeight = options.gitWeight;
+    if (options.frecencyWeight !== undefined) params.frecencyWeight = options.frecencyWeight;
+    if (options.proximityWeight !== undefined) params.proximityWeight = options.proximityWeight;
+
+    const response = await this.bridge.call<unknown>("search.files", params);
 
     return normalizeSearchFilesResponse(response);
   }
