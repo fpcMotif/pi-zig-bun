@@ -65,4 +65,15 @@ describe("SessionTree", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  test("TC-SESSION-005 throws error for fork with missing session ID", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "pi-session-"));
+    try {
+      const tree = new SessionTree(new SessionStore(root));
+      await expect(tree.fork("non-existent-id", "user", "hello"))
+        .rejects.toThrow("Parent session turn not found: non-existent-id");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
