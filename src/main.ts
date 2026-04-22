@@ -197,29 +197,30 @@ async function streamAgentTurn(
   let text = "";
   const toolCalls: AgentToolCall[] = [];
   let hadError = false;
+  const pendingUiUpdates: Promise<unknown>[] = [];
 
   for await (const event of stream.events) {
     switch (event.type) {
       case "token":
         text += event.token;
         tui.writeToken(event.token);
-        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "token", token: event.token });
+        pendingUiUpdates.push(runtime.search.uiUpdate({ turnId: currentTurn, kind: "token", token: event.token }));
         break;
 
       case "tool_call":
         toolCalls.push(event.toolCall);
         tui.writeToolCall(event.toolCall.name, event.toolCall.arguments);
-        await runtime.search.uiUpdate({
+        pendingUiUpdates.push(runtime.search.uiUpdate({
           turnId: currentTurn,
           kind: "tool_call",
           message: `[tool_call ${event.toolCall.name}]`,
           meta: { tool: event.toolCall.name },
-        });
+        }));
         break;
 
       case "error":
         tui.writeError(event.error);
-        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "error", message: event.error, done: true });
+        pendingUiUpdates.push(runtime.search.uiUpdate({ turnId: currentTurn, kind: "error", message: event.error, done: true }));
         hadError = true;
         break;
 
@@ -231,7 +232,7 @@ async function streamAgentTurn(
             toolCalls.push(tc);
           }
         }
-        await runtime.search.uiUpdate({ turnId: currentTurn, kind: "done", done: true });
+        pendingUiUpdates.push(runtime.search.uiUpdate({ turnId: currentTurn, kind: "done", done: true }));
         break;
     }
 
@@ -241,6 +242,7 @@ async function streamAgentTurn(
   }
 
   await stream.cancel();
+  await Promise.all(pendingUiUpdates);
   return { text, toolCalls, hadError };
 }
 
