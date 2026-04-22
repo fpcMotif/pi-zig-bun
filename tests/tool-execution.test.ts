@@ -362,17 +362,21 @@ describe("bashTool", () => {
   test("filters out sensitive environment variables", async () => {
     process.env.TEST_API_KEY = "secret123";
     process.env.SAFE_VAR = "public456";
+    process.env.LANG = "en_US.UTF-8";
+
     const result = (await bashTool.execute(makeCtx(tmpDir), {
-      command: "if [[ -n ${TEST_API_KEY-} ]]; then printf 'TEST_API_KEY=%s\\n' \"$TEST_API_KEY\"; fi; if [[ -n ${SAFE_VAR-} ]]; then printf 'SAFE_VAR=%s\\n' \"$SAFE_VAR\"; fi",
+      command: "if [[ -n ${TEST_API_KEY-} ]]; then printf 'TEST_API_KEY=%s\\n' \"$TEST_API_KEY\"; fi; if [[ -n ${SAFE_VAR-} ]]; then printf 'SAFE_VAR=%s\\n' \"$SAFE_VAR\"; fi; if [[ -n ${LANG-} ]]; then printf 'LANG=%s\\n' \"$LANG\"; fi",
     })) as ToolResult;
 
     expect(result.ok).toBe(true);
     expect(result.output).not.toContain("TEST_API_KEY");
     expect(result.output).not.toContain("secret123");
-    expect(result.output).toContain("SAFE_VAR=public456");
+    expect(result.output).not.toContain("SAFE_VAR");
+    expect(result.output).toContain("LANG=en_US.UTF-8");
 
     delete process.env.TEST_API_KEY;
     delete process.env.SAFE_VAR;
+    // We don't delete LANG as it might be needed by other tests/processes
   });
 
   test("executes within the context cwd", async () => {
