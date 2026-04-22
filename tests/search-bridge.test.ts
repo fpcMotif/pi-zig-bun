@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { SearchBridge } from "../src/search/bridge";
 
-async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash" | "stderr" | "stderr_sensitive" | "malformed" | "non_protocol" | "rpc_error" | "rpc_error_sensitive"): Promise<{ root: string; binaryPath: string }> {
+async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash" | "stderr" | "stderr_sensitive" | "stderr_overflow" | "malformed" | "non_protocol" | "rpc_error" | "rpc_error_sensitive"): Promise<{ root: string; binaryPath: string }> {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-bridge-"));
   const binaryPath = path.join(root, "fake-bridge.mjs");
   const script = `#!/usr/bin/env node
@@ -18,6 +18,12 @@ rl.on("line", (line) => {
   }
   if (mode === "stderr") {
     process.stderr.write("some error output\\n");
+  }
+  if (mode === "stderr_overflow") {
+    const chunk = "A".repeat(1024 * 1024);
+    for (let i = 0; i < 6; i++) {
+      process.stderr.write(chunk);
+    }
   }
   if (mode === "stderr_sensitive") {
     process.stderr.write("Error occurred at binary ${binaryPath} in workspace ${root}\\n");
@@ -263,6 +269,28 @@ describe("SearchBridge protocol behavior", () => {
       expect(response.echoed).toEqual(params);
     } finally {
       await bridge.stop();
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("truncates stderr log when it exceeds 5MB", async () => {
+    const fixture = await createFakeBridgeBinary("stderr_overflow");
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 2000 });
+    try {
+      await bridge.call<{ method: string }>("search.files", { query: "abc" });
+    } catch {
+      // ignore timeout
+    } finally {
+      await bridge.stop();
+
+      const { readFileSync, statSync } = await import("node:fs");
+      const logPath = path.join(fixture.root, ".pi", "search-bridge.stderr.log");
+      const stats = statSync(logPath);
+      expect(stats.size).toBeLessThan(6 * 1024 * 1024);
+
+      const logContent = readFileSync(logPath, "utf8");
+      expect(logContent).toContain("[LOG TRUNCATED DUE TO SIZE LIMIT]");
+
       await rm(fixture.root, { recursive: true, force: true });
     }
   });

@@ -1,6 +1,6 @@
 import type { UiAck, UiInputParams, UiUpdateParams } from "../rpc/types";
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -46,6 +46,7 @@ export class SearchBridge {
   private nextRequestId = 1;
   private pending = new Map<RpcId, PendingCall>();
   private started = false;
+  private currentLogSize = 0;
 
   private scrub(text: string): string {
     const paths = [
@@ -115,6 +116,18 @@ export class SearchBridge {
     mkdirSync(piDir, { recursive: true });
 
     const stderrLog = path.join(piDir, "search-bridge.stderr.log");
+    const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
+
+    try {
+      if (existsSync(stderrLog)) {
+        const stats = statSync(stderrLog);
+        this.currentLogSize = stats.size;
+      } else {
+        this.currentLogSize = 0;
+      }
+    } catch {
+      this.currentLogSize = 0;
+    }
 
     if (this.proc.stderr) {
       this.proc.stderr.on("data", (chunk) => {
@@ -123,7 +136,18 @@ export class SearchBridge {
           if (!existsSync(piDir)) {
             mkdirSync(piDir, { recursive: true });
           }
-          appendFileSync(stderrLog, this.scrub(chunk.toString()));
+
+          const text = this.scrub(chunk.toString());
+          const byteLength = Buffer.byteLength(text, "utf8");
+
+          if (this.currentLogSize + byteLength > MAX_LOG_SIZE) {
+            const marker = "\n[LOG TRUNCATED DUE TO SIZE LIMIT]\n";
+            writeFileSync(stderrLog, marker + text);
+            this.currentLogSize = Buffer.byteLength(marker + text, "utf8");
+          } else {
+            appendFileSync(stderrLog, text);
+            this.currentLogSize += byteLength;
+          }
         } catch {
           // ignore logging errors to prevent breaking the bridge
         }
