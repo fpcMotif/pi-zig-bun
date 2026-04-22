@@ -267,12 +267,19 @@ function buildAssistantToolCallMessage(
 /**
  * Build a tool-result message for a single tool call.
  */
-function buildToolResultMessage(toolCallId: string, resultContent: string): AgentMessage {
+function createToolMessagePayload(toolCallId: string, resultContent: string): AgentMessage {
   return {
     role: "tool",
     content: resultContent,
     tool_call_id: toolCallId,
   };
+}
+
+/**
+ * Build a tool-result message for a single tool call.
+ */
+function buildToolResultMessage(toolCallId: string, resultContent: string): AgentMessage {
+  return createToolMessagePayload(toolCallId, resultContent);
 }
 
 async function runInteractive(
