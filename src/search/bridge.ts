@@ -121,12 +121,8 @@ export class SearchBridge {
     const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
 
     try {
-      if (existsSync(stderrLog)) {
-        const stats = await stat(stderrLog);
-        this.currentLogSize = stats.size;
-      } else {
-        this.currentLogSize = 0;
-      }
+      const stats = await stat(stderrLog);
+      this.currentLogSize = stats.size;
     } catch {
       this.currentLogSize = 0;
     }

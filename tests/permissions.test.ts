@@ -1,17 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { CapabilityManager, loadPolicyFile, type CapabilityPolicy } from "../src/permissions";
+import { withTempWorkspace as withTempDir } from "./helpers";
 
-async function withTempWorkspace<T>(run: (root: string) => Promise<T>): Promise<T> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "pi-policy-"));
-  try {
-    return await run(root);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-}
+const withTempWorkspace = <T,>(run: (root: string) => Promise<T>) =>
+  withTempDir("pi-policy-", run);
 
 describe("CapabilityManager glob and transitions", () => {
   test("prevents path traversal bypass via backslashes and dot dots", () => {

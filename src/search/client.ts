@@ -216,13 +216,13 @@ export class SearchClient {
       includeScores: options.includeScores ?? true,
     };
 
-    if (options.extFilter !== undefined) params.extFilter = options.extFilter;
-    if (options.pathFilter !== undefined) params.pathFilter = options.pathFilter;
-    if (options.maxTypos !== undefined) params.maxTypos = options.maxTypos;
-    if (options.fuzzyWeight !== undefined) params.fuzzyWeight = options.fuzzyWeight;
-    if (options.gitWeight !== undefined) params.gitWeight = options.gitWeight;
-    if (options.frecencyWeight !== undefined) params.frecencyWeight = options.frecencyWeight;
-    if (options.proximityWeight !== undefined) params.proximityWeight = options.proximityWeight;
+    const optional = [
+      "extFilter", "pathFilter", "maxTypos",
+      "fuzzyWeight", "gitWeight", "frecencyWeight", "proximityWeight",
+    ] as const;
+    for (const key of optional) {
+      if (options[key] !== undefined) params[key] = options[key];
+    }
 
     const response = await this.bridge.call<unknown>("search.files", params);
 

@@ -1,17 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, appendFile } from "node:fs/promises";
+import { appendFile } from "node:fs/promises";
 import path from "node:path";
-import os from "node:os";
 import { SessionStore, SessionTree } from "../src/session/tree";
+import { withTempWorkspace as withTempDir } from "./helpers";
 
-async function withTempWorkspace<T>(run: (root: string) => Promise<T>): Promise<T> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "pi-session-"));
-  try {
-    return await run(root);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-}
+const withTempWorkspace = <T,>(run: (root: string) => Promise<T>) =>
+  withTempDir("pi-session-", run);
 
 describe("SessionTree invariants", () => {
   test("root creation, fork lineage, and history ordering", async () => {
