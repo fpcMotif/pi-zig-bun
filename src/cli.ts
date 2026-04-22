@@ -34,19 +34,87 @@ function isCommandToken(token: string | undefined): boolean {
   return normalizeCommand(token) !== undefined;
 }
 
+interface ParseState {
+  argv: string[];
+  i: number;
+  options: ParsedCli;
+  queryFromFlag: string | undefined;
+}
+
+function handleHelp(state: ParseState): void {
+  state.options.help = true;
+}
+
+function handleJson(state: ParseState): void {
+  state.options.json = true;
+  const next = state.argv[state.i + 1];
+  if (
+    next !== undefined
+    && !next.startsWith("-")
+    && state.queryFromFlag === undefined
+    && !isCommandToken(next)
+  ) {
+    state.queryFromFlag = next;
+    state.i += 1;
+  }
+}
+
+function handlePrint(state: ParseState, token: string): void {
+  const next = state.argv[state.i + 1];
+  if (next === undefined) {
+    throw new Error(`Missing value for ${token}`);
+  }
+  state.queryFromFlag = next;
+  state.i += 1;
+}
+
+function handleCwd(state: ParseState, token: string): void {
+  const next = state.argv[state.i + 1];
+  if (next === undefined) {
+    throw new Error(`Missing value for ${token}`);
+  }
+  state.options.cwd = next;
+  state.i += 1;
+}
+
+function handleLimit(state: ParseState, token: string): void {
+  const next = state.argv[state.i + 1];
+  if (next === undefined) {
+    throw new Error(`Missing value for ${token}`);
+  }
+  state.options.limit = Number.parseInt(next, 10);
+  if (!Number.isFinite(state.options.limit) || state.options.limit <= 0) {
+    state.options.limit = 50;
+  }
+  state.i += 1;
+}
+
+function handleRootSession(state: ParseState, token: string): void {
+  const next = state.argv[state.i + 1];
+  if (next === undefined) {
+    throw new Error(`Missing value for ${token}`);
+  }
+  state.options.rootSession = next;
+  state.i += 1;
+}
+
 export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
   let command: ParsedCli["command"];
-  let queryFromFlag: string | undefined;
   const positional: string[] = [];
-  const options: ParsedCli = {
-    json: false,
-    cwd: process.cwd(),
-    limit: 50,
-    help: false,
+  const state: ParseState = {
+    argv,
+    i: 0,
+    options: {
+      json: false,
+      cwd: process.cwd(),
+      limit: 50,
+      help: false,
+    },
+    queryFromFlag: undefined,
   };
 
-  for (let i = 0; i < argv.length; i += 1) {
-    const token = argv[i]!;
+  for (; state.i < state.argv.length; state.i += 1) {
+    const token = state.argv[state.i]!;
 
     // If we found a command that takes a raw query string, slurp everything else.
     if (!token.startsWith("-") && positional.length === 0 && normalizeCommand(token) !== undefined) {
@@ -55,8 +123,8 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
 
       // If the command is search or grep, the rest of the line is the query.
       if (command === "search" || command === "grep") {
-        for (let j = i + 1; j < argv.length; j++) {
-          positional.push(argv[j]!);
+        for (let j = state.i + 1; j < state.argv.length; j++) {
+          positional.push(state.argv[j]!);
         }
         break;
       }
@@ -71,68 +139,36 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
     switch (token) {
       case "-h":
       case "--help":
-        options.help = true;
+        handleHelp(state);
         continue;
       case "-j":
-      case "--json": {
-        options.json = true;
-        const next = argv[i + 1];
-        if (
-          next !== undefined
-          && !next.startsWith("-")
-          && queryFromFlag === undefined
-          && !isCommandToken(next)
-        ) {
-          queryFromFlag = next;
-          i += 1;
-        }
+      case "--json":
+        handleJson(state);
         continue;
-      }
       case "-p":
-      case "--print": {
-        const next = argv[i + 1];
-        if (next === undefined) {
-          throw new Error(`Missing value for ${token}`);
-        }
-        queryFromFlag = next;
-        i += 1;
+      case "--print":
+        handlePrint(state, token);
         continue;
-      }
       case "-c":
       case "--cwd":
-        if (argv[i + 1] === undefined) {
-          throw new Error(`Missing value for ${token}`);
-        }
-        options.cwd = argv[i + 1]!;
-        i += 1;
+        handleCwd(state, token);
         continue;
       case "-l":
       case "--limit":
-        if (argv[i + 1] === undefined) {
-          throw new Error(`Missing value for ${token}`);
-        }
-        options.limit = Number.parseInt(argv[i + 1]!, 10);
-        if (!Number.isFinite(options.limit) || options.limit <= 0) {
-          options.limit = 50;
-        }
-        i += 1;
+        handleLimit(state, token);
         continue;
       case "-r":
       case "--root-session":
-        if (argv[i + 1] === undefined) {
-          throw new Error(`Missing value for ${token}`);
-        }
-        options.rootSession = argv[i + 1]!;
-        i += 1;
+        handleRootSession(state, token);
         continue;
       default:
         throw new Error(`Unknown flag: ${token}`);
     }
   }
 
-  if (options.help) {
-    options.command = "help";
-    return options;
+  if (state.options.help) {
+    state.options.command = "help";
+    return state.options;
   }
 
   if (positional.length > 0) {
@@ -140,22 +176,22 @@ export function parseCli(argv: string[] = process.argv.slice(2)): ParsedCli {
   }
 
   if (command) {
-    if (queryFromFlag !== undefined) {
+    if (state.queryFromFlag !== undefined) {
       throw new Error("Cannot combine one-shot query flags with explicit command");
     }
-    options.command = command;
-    options.query = positional.slice(1).join(" ").trim();
-    return options;
+    state.options.command = command;
+    state.options.query = positional.slice(1).join(" ").trim();
+    return state.options;
   }
 
-  if (queryFromFlag !== undefined) {
-    options.command = "search";
-    options.query = queryFromFlag;
-    return options;
+  if (state.queryFromFlag !== undefined) {
+    state.options.command = "search";
+    state.options.query = state.queryFromFlag;
+    return state.options;
   }
 
-  options.command = "interactive";
-  return options;
+  state.options.command = "interactive";
+  return state.options;
 }
 
 export function usage(): string {
