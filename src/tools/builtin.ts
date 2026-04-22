@@ -8,6 +8,9 @@ import type { Tool, ToolCapabilityRequirement, ToolExecutionContext } from "./ty
 /** Hard ceiling on file reads to prevent OOM from enormous files. */
 const MAX_READ_BYTES = 500_000;
 
+/** Regex to identify sensitive environment variables that should be scrubbed. */
+const SENSITIVE_ENV_VAR_REGEX = /(API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS)/i;
+
 type ReadToolInput = { path: string };
 type WriteToolInput = { path: string; content: string; overwrite?: boolean };
 type EditToolInput = { path: string; from: string; to: string };
@@ -328,7 +331,7 @@ export const bashTool: Tool<BashToolInput, ToolResult> = {
 
     const safeEnv = { ...process.env };
     for (const key of Object.keys(safeEnv)) {
-      if (/(API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS)/i.test(key)) {
+      if (SENSITIVE_ENV_VAR_REGEX.test(key)) {
         delete safeEnv[key];
       }
     }
