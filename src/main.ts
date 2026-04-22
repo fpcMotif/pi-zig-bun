@@ -392,11 +392,31 @@ async function runInteractive(
       const assistantMsg = buildAssistantToolCallMessage(turn.text, turn.toolCalls);
       messages.push(assistantMsg);
 
+      const toolCallIdMap = new Map<string, string[]>();
+      for (const w of assistantMsg.tool_calls!) {
+        const key = `${w.function.name}:${w.function.arguments}`;
+        const list = toolCallIdMap.get(key) ?? [];
+        list.push(w.id);
+        toolCallIdMap.set(key, list);
+      }
+
+      const toolCallUsageIndex = new Map<string, number>();
       const usedToolCallIds = new Set<string>();
+
       for (const tc of turn.toolCalls) {
-        const toolCallId = tc.id ?? assistantMsg.tool_calls!.find(
-          (w) => w.function.name === tc.name && w.function.arguments === tc.arguments && !usedToolCallIds.has(w.id),
-        )!.id;
+        let toolCallId: string;
+        if (tc.id) {
+          toolCallId = tc.id;
+        } else {
+          const key = `${tc.name}:${tc.arguments}`;
+          const ids = toolCallIdMap.get(key)!;
+          let idx = toolCallUsageIndex.get(key) ?? 0;
+          while (idx < ids.length && usedToolCallIds.has(ids[idx]!)) {
+            idx++;
+          }
+          toolCallId = ids[idx]!;
+          toolCallUsageIndex.set(key, idx + 1);
+        }
         usedToolCallIds.add(toolCallId);
 
         tui.writeToolExecution(tc.name);

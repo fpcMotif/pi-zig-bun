@@ -696,10 +696,13 @@ fn levenshteinLimited(allocator: Allocator, a: []const u8, b: []const u8, max_di
     const delta = if (a.len > b.len) a.len - b.len else b.len - a.len;
     if (delta > max_dist) return null;
 
-    var prev = allocator.alloc(u16, b.len + 1) catch return null;
-    defer allocator.free(prev);
-    var curr = allocator.alloc(u16, b.len + 1) catch return null;
-    defer allocator.free(curr);
+    var prev_buf: [256]u16 = undefined;
+    var curr_buf: [256]u16 = undefined;
+
+    var prev: []u16 = if (b.len + 1 <= 256) prev_buf[0 .. b.len + 1] else allocator.alloc(u16, b.len + 1) catch return null;
+    defer if (b.len + 1 > 256) allocator.free(prev);
+    var curr: []u16 = if (b.len + 1 <= 256) curr_buf[0 .. b.len + 1] else allocator.alloc(u16, b.len + 1) catch return null;
+    defer if (b.len + 1 > 256) allocator.free(curr);
 
     for (0..b.len + 1) |j| prev[j] = @intCast(j);
 
@@ -869,8 +872,8 @@ fn searchFiles(
         });
     }
 
-    try state.writeIndexToDisk();
     const elapsed_ms = std.time.milliTimestamp() - start;
+    try state.writeIndexToDisk();
     const response = FileSearchResponse{
         .query = response_query,
         .total = total,
