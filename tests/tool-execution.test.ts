@@ -86,6 +86,23 @@ describe("readTool", () => {
     await expect(readTool.execute(makeCtx(tmpDir), { path: "/etc/passwd" })).rejects.toThrow("Path traversal detected");
   });
 
+
+  test("findNearestExistingAncestor returns undefined when access continuously fails", async () => {
+    // If access rejects every time, the loop goes all the way up to root.
+    // Eventually dirname(root) === root, and it returns undefined.
+    const accessSpy = spyOn(fsPromises, "access").mockRejectedValue(new Error("EACCES"));
+    try {
+      // By using a non-existent path, ensureNoSymlinkEscape will trigger findNearestExistingAncestor.
+      // Since ancestor is undefined, ensureNoSymlinkEscape will just return early (lines 88-90).
+      // Then it will proceed to acquireSafeFileHandle, which will attempt to open it and fail with ENOENT.
+      await expect(
+        readTool.execute(makeCtx(tmpDir), { path: path.join(tmpDir, "some-fake-file.txt") }),
+      ).rejects.toThrow("ENOENT");
+    } finally {
+      accessSpy.mockRestore();
+    }
+  });
+
   test("rejects existing file reached via symlink escape", async () => {
     const escapedWorkspace = await mkdtemp(path.join(os.tmpdir(), "pi-tool-escape-read-"));
     const escapedRoot = path.join(escapedWorkspace, "outside");
