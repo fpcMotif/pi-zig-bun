@@ -1,5 +1,5 @@
 import { readdir } from "node:fs/promises";
-import { watch, type FSWatcher } from "node:fs";
+import { watch } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import type { ExtensionLoaderResult, SkillContext, SkillModule, Logger } from "./types";
@@ -128,7 +128,7 @@ export function watchSkills(
   searchRoots: string[],
   logger: Logger = console,
 ): { stop: () => void } {
-  const watchers: FSWatcher[] = [];
+  const watchers: ReturnType<typeof watch>[] = [];
   /** Per-file debounce timers keyed by absolute path. */
   const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   let stopped = false;
