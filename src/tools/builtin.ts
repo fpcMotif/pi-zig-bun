@@ -328,7 +328,7 @@ export const bashTool: Tool<BashToolInput, ToolResult> = {
 
     const safeEnv = { ...process.env };
     for (const key of Object.keys(safeEnv)) {
-      if (/(API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS)/i.test(key)) {
+      if (/(API_KEY|TOKEN|SECRET|PASSWORD|CREDENTIALS|AUTH|PRIVATE|KEY|CERT|SALT|PASS|SIGNATURE|BEARER|SESSION|JWT)/i.test(key)) {
         delete safeEnv[key];
       }
     }
