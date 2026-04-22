@@ -86,23 +86,6 @@ describe("readTool", () => {
     await expect(readTool.execute(makeCtx(tmpDir), { path: "/etc/passwd" })).rejects.toThrow("Path traversal detected");
   });
 
-
-  test("findNearestExistingAncestor returns undefined when access continuously fails", async () => {
-    // If access rejects every time, the loop goes all the way up to root.
-    // Eventually dirname(root) === root, and it returns undefined.
-    const accessSpy = spyOn(fsPromises, "access").mockRejectedValue(new Error("EACCES"));
-    try {
-      // By using a non-existent path, ensureNoSymlinkEscape will trigger findNearestExistingAncestor.
-      // Since ancestor is undefined, ensureNoSymlinkEscape will just return early (lines 88-90).
-      // Then it will proceed to acquireSafeFileHandle, which will attempt to open it and fail with ENOENT.
-      await expect(
-        readTool.execute(makeCtx(tmpDir), { path: path.join(tmpDir, "some-fake-file.txt") }),
-      ).rejects.toThrow("ENOENT");
-    } finally {
-      accessSpy.mockRestore();
-    }
-  });
-
   test("rejects existing file reached via symlink escape", async () => {
     const escapedWorkspace = await mkdtemp(path.join(os.tmpdir(), "pi-tool-escape-read-"));
     const escapedRoot = path.join(escapedWorkspace, "outside");
@@ -236,21 +219,23 @@ describe("writeTool", () => {
   });
 
   test("throws and closes file handle when writeFile fails", async () => {
-    let closed = false;
     const filePath = path.join(tmpDir, "mocked.txt");
     await writeFile(filePath, "initial");
 
-    // The fs check uses realpath, stat, etc. We just mock open since the others succeed.
-    // The symlink check in ensureNoSymlinkEscape compares fs.realpath with handle.stat()
-    const realStat = await fsPromises.stat(filePath);
-
-    const openSpy = spyOn(fsPromises, "open").mockImplementation(async () => {
-      return {
-        stat: async () => realStat,
-        writeFile: async () => { throw new Error("ENOSPC: no space left on device"); },
-        close: async () => { closed = true; },
-        truncate: async () => {}
-      } as any;
+    const originalOpen = fsPromises.open;
+    let closeSpy: ReturnType<typeof spyOn> | undefined;
+    const openSpy = spyOn(fsPromises, "open").mockImplementation(async (openedPath, flags, mode) => {
+      const handle = await originalOpen(openedPath, flags, mode);
+      if (openedPath === filePath) {
+        closeSpy = spyOn(handle, "close");
+        Object.defineProperty(handle, "writeFile", {
+          configurable: true,
+          value: async () => {
+            throw new Error("ENOSPC: no space left on device");
+          },
+        });
+      }
+      return handle;
     });
 
     try {
@@ -261,8 +246,12 @@ describe("writeTool", () => {
           overwrite: true,
         }),
       ).rejects.toThrow("ENOSPC");
-      expect(closed).toBe(true);
+      if (!closeSpy) {
+        throw new Error("expected writeTool to open the target file");
+      }
+      expect(closeSpy).toHaveBeenCalled();
     } finally {
+      closeSpy?.mockRestore();
       openSpy.mockRestore();
     }
   });

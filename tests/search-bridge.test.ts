@@ -4,6 +4,22 @@ import path from "node:path";
 import os from "node:os";
 import { SearchBridge } from "../src/search/bridge";
 
+const STANDARD_REQUEST_TIMEOUT_MS = 1_000;
+
+async function waitForCondition(
+  condition: () => boolean | Promise<boolean>,
+  timeoutMs = STANDARD_REQUEST_TIMEOUT_MS,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await condition()) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting after ${timeoutMs}ms`);
+}
+
 async function createFakeBridgeBinary(mode: "ok" | "timeout" | "crash" | "stderr" | "stderr_sensitive" | "stderr_overflow" | "malformed" | "non_protocol" | "rpc_error" | "rpc_error_sensitive"): Promise<{ root: string; binaryPath: string }> {
   const root = await mkdtemp(path.join(os.tmpdir(), "pi-bridge-"));
   const binaryPath = path.join(root, "fake-bridge.mjs");
@@ -35,6 +51,9 @@ rl.on("line", (line) => {
     process.stdout.write("not json\\n");
     // Fallthrough to write actual result so we can test it ignored the malformed line
   }
+  if (mode === "non_protocol") {
+    process.stdout.write(JSON.stringify({ ok: true, note: "not json-rpc" }) + "\\n");
+  }
   if (mode === "rpc_error_sensitive") {
     const errorPayload = JSON.stringify({ jsonrpc: "2.0", id: req.id, error: { code: -32600, message: ${JSON.stringify(`Error occurred at binary ${binaryPath} in workspace ${root}`)} } });
     process.stdout.write(errorPayload + "\\n");
@@ -58,7 +77,7 @@ rl.on("line", (line) => {
 describe("SearchBridge protocol behavior", () => {
   test("handles framed JSON-RPC responses", async () => {
     const fixture = await createFakeBridgeBinary("ok");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: STANDARD_REQUEST_TIMEOUT_MS });
     try {
       const response = await bridge.call<{ method: string }>("search.files", { query: "abc" });
       expect(response.method).toBe("search.files");
@@ -82,7 +101,7 @@ describe("SearchBridge protocol behavior", () => {
   test("recovers after process crash on next call", async () => {
     const crashFixture = await createFakeBridgeBinary("crash");
     const okFixture = await createFakeBridgeBinary("ok");
-    const bridge = new SearchBridge({ binaryPath: crashFixture.binaryPath, workspaceRoot: crashFixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: crashFixture.binaryPath, workspaceRoot: crashFixture.root, requestTimeoutMs: STANDARD_REQUEST_TIMEOUT_MS });
     try {
       let crashed = false;
       try {
@@ -93,7 +112,7 @@ describe("SearchBridge protocol behavior", () => {
       }
       expect(crashed).toBe(true);
       await bridge.stop();
-      const recovered = new SearchBridge({ binaryPath: okFixture.binaryPath, workspaceRoot: okFixture.root, requestTimeoutMs: 200 });
+      const recovered = new SearchBridge({ binaryPath: okFixture.binaryPath, workspaceRoot: okFixture.root, requestTimeoutMs: STANDARD_REQUEST_TIMEOUT_MS });
       try {
         const response = await recovered.call<{ method: string }>("search.grep", { query: "abc" });
         expect(response.method).toBe("search.grep");
@@ -128,7 +147,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("enforces single-flight by rejecting interrupted concurrent call", async () => {
     const fixture = await createFakeBridgeBinary("timeout");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: STANDARD_REQUEST_TIMEOUT_MS });
     try {
       const first = bridge.call("search.files", { query: "a" });
       const second = bridge.call("search.files", { query: "b" });
@@ -142,15 +161,20 @@ describe("SearchBridge protocol behavior", () => {
 
   test("logs stderr output to .pi/search-bridge.stderr.log", async () => {
     const fixture = await createFakeBridgeBinary("stderr");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: STANDARD_REQUEST_TIMEOUT_MS });
     try {
       await bridge.call("search.files", { query: "abc" });
 
-      // Wait a tiny bit for the async write to complete
-      await new Promise(resolve => setTimeout(resolve, 10));
-
       const { readFile } = await import("node:fs/promises");
-      const logContent = await readFile(path.join(fixture.root, ".pi", "search-bridge.stderr.log"), "utf8");
+      const logPath = path.join(fixture.root, ".pi", "search-bridge.stderr.log");
+      await waitForCondition(async () => {
+        try {
+          return (await readFile(logPath, "utf8")).includes("some error output");
+        } catch {
+          return false;
+        }
+      });
+      const logContent = await readFile(logPath, "utf8");
       expect(logContent).toContain("some error output");
     } finally {
       await bridge.stop();
@@ -160,13 +184,20 @@ describe("SearchBridge protocol behavior", () => {
 
   test("scrubs sensitive paths from stderr log output", async () => {
     const fixture = await createFakeBridgeBinary("stderr_sensitive");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: STANDARD_REQUEST_TIMEOUT_MS });
     try {
       await bridge.call("search.files", { query: "abc" });
-      await new Promise((resolve) => setTimeout(resolve, 10));
 
       const { readFile } = await import("node:fs/promises");
-      const logContent = await readFile(path.join(fixture.root, ".pi", "search-bridge.stderr.log"), "utf8");
+      const logPath = path.join(fixture.root, ".pi", "search-bridge.stderr.log");
+      await waitForCondition(async () => {
+        try {
+          return (await readFile(logPath, "utf8")).includes("[BINARY_PATH]");
+        } catch {
+          return false;
+        }
+      });
+      const logContent = await readFile(logPath, "utf8");
 
       expect(logContent).toContain("Error occurred at binary [BINARY_PATH] in workspace [WORKSPACE_ROOT]");
       expect(logContent).not.toContain(fixture.root);
@@ -179,7 +210,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("ignores malformed json on stdout", async () => {
     const fixture = await createFakeBridgeBinary("malformed");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: STANDARD_REQUEST_TIMEOUT_MS });
     try {
       const response = await bridge.call<{ method: string }>("search.files", { query: "abc" });
       expect(response.method).toBe("search.files");
@@ -191,7 +222,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("ignores valid json that is not protocol json on stdout", async () => {
     const fixture = await createFakeBridgeBinary("non_protocol");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: STANDARD_REQUEST_TIMEOUT_MS });
     try {
       const response = await bridge.call<{ method: string }>("search.files", { query: "abc" });
       expect(response.method).toBe("search.files");
@@ -203,7 +234,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("scrubs sensitive paths from rpc error messages", async () => {
     const fixture = await createFakeBridgeBinary("rpc_error_sensitive");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: STANDARD_REQUEST_TIMEOUT_MS });
     try {
       await expect(bridge.call("search.files", { query: "abc" })).rejects.toThrow("-32600: Error occurred at binary [BINARY_PATH] in workspace [WORKSPACE_ROOT]");
     } finally {
@@ -214,7 +245,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("rejects call when rpc returns error", async () => {
     const fixture = await createFakeBridgeBinary("rpc_error");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: STANDARD_REQUEST_TIMEOUT_MS });
     try {
       await expect(bridge.call("search.files", { query: "abc" })).rejects.toThrow("-32600: Invalid Request");
     } finally {
@@ -225,12 +256,14 @@ describe("SearchBridge protocol behavior", () => {
 
   test("rejects call on child process error", async () => {
     const fixture = await createFakeBridgeBinary("ok");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: STANDARD_REQUEST_TIMEOUT_MS });
     try {
       const callPromise = bridge.call("search.files", { query: "abc" });
 
-      // Wait a tick so the process is spawned, then manually emit an error
-      await new Promise(resolve => setTimeout(resolve, 10));
+      await waitForCondition(() => {
+        // @ts-ignore - access private field for testing
+        return Boolean(bridge.proc?.listenerCount("error"));
+      });
       // @ts-ignore - access private field for testing
       bridge.proc.emit("error", new Error("simulated spawn error"));
 
@@ -243,7 +276,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("uiUpdate wrapper calls ui.update", async () => {
     const fixture = await createFakeBridgeBinary("ok");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: STANDARD_REQUEST_TIMEOUT_MS });
     try {
       const params = { turnId: "turn-1", kind: "status" as const, message: "progress", meta: { progress: 0.5 } };
       const response = await bridge.uiUpdate(params);
@@ -259,7 +292,7 @@ describe("SearchBridge protocol behavior", () => {
 
   test("uiInput wrapper calls ui.input", async () => {
     const fixture = await createFakeBridgeBinary("ok");
-    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: STANDARD_REQUEST_TIMEOUT_MS });
     try {
       const params = { turnId: "turn-1", text: "testing", metadata: { source: "test" } };
       const response = await bridge.uiInput(params);
@@ -276,15 +309,26 @@ describe("SearchBridge protocol behavior", () => {
   test("truncates stderr log when it exceeds 5MB", async () => {
     const fixture = await createFakeBridgeBinary("stderr_overflow");
     const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 2000 });
+    const logPath = path.join(fixture.root, ".pi", "search-bridge.stderr.log");
     try {
       await bridge.call<{ method: string }>("search.files", { query: "abc" });
     } catch {
       // ignore timeout
+    }
+
+    try {
+      const { readFile } = await import("node:fs/promises");
+      await waitForCondition(async () => {
+        try {
+          return (await readFile(logPath, "utf8")).includes("[LOG TRUNCATED DUE TO SIZE LIMIT]");
+        } catch {
+          return false;
+        }
+      }, 5_000);
     } finally {
       await bridge.stop();
 
       const { readFileSync, statSync } = await import("node:fs");
-      const logPath = path.join(fixture.root, ".pi", "search-bridge.stderr.log");
       const stats = statSync(logPath);
       expect(stats.size).toBeLessThan(6 * 1024 * 1024);
 

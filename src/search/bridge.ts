@@ -100,25 +100,13 @@ export class SearchBridge {
       );
     }
 
-    this.proc = spawn(this.binaryPath, {
-      cwd: this.workspaceRoot,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-    });
-
-    if (!this.proc.stdin || !this.proc.stdout) {
-      throw new Error("Failed to initialize search bridge stdin/stdout streams");
-    }
-
-    this.started = true;
-
     // We shouldn't fail fatally if the root directory is wiped while bridge runs.
-    // Ensure the directory exists initially.
+    // Ensure the directory exists initially before the child starts emitting output.
     const piDir = path.join(this.workspaceRoot, ".pi");
-    await mkdir(piDir, { recursive: true });
-
     const stderrLog = path.join(piDir, "search-bridge.stderr.log");
     const MAX_LOG_SIZE = 5 * 1024 * 1024; // 5MB
+
+    await mkdir(piDir, { recursive: true });
 
     try {
       const stats = await stat(stderrLog);
@@ -127,8 +115,36 @@ export class SearchBridge {
       this.currentLogSize = 0;
     }
 
-    if (this.proc.stderr) {
-      this.proc.stderr.on("data", (chunk) => {
+    const proc = spawn(this.binaryPath, {
+      cwd: this.workspaceRoot,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    this.proc = proc;
+
+    if (!proc.stdin || !proc.stdout) {
+      proc.kill();
+      this.proc = undefined;
+      throw new Error("Failed to initialize search bridge stdin/stdout streams");
+    }
+
+    this.started = true;
+
+    const failPendingCalls = (error: Error): void => {
+      if (this.proc !== proc) {
+        return;
+      }
+      this.proc = undefined;
+      for (const call of this.pending.values()) {
+        if (call.timeoutHandle) clearTimeout(call.timeoutHandle);
+        call.reject(error);
+      }
+      this.pending.clear();
+      this.started = false;
+    };
+
+    if (proc.stderr) {
+      proc.stderr.on("data", (chunk) => {
         const text = this.scrub(chunk.toString());
         const byteLength = Buffer.byteLength(text, "utf8");
         this.stderrTask = this.stderrTask
@@ -152,7 +168,7 @@ export class SearchBridge {
     }
 
     this.stdoutBuffer = "";
-    this.proc.stdout.on("data", (chunk) => {
+    proc.stdout.on("data", (chunk) => {
       this.stdoutBuffer += chunk.toString();
       while (true) {
         const newlineIndex = this.stdoutBuffer.indexOf("\n");
@@ -166,25 +182,16 @@ export class SearchBridge {
       }
     });
 
-    this.proc.on("close", (code, signal) => {
-      const err = new Error(
-        `Search bridge exited${code !== null ? ` with code ${code}` : ` with signal ${String(signal)}`}`,
+    proc.on("close", (code, signal) => {
+      failPendingCalls(
+        new Error(
+          `Search bridge exited${code !== null ? ` with code ${code}` : ` with signal ${String(signal)}`}`,
+        ),
       );
-      for (const call of this.pending.values()) {
-        if (call.timeoutHandle) clearTimeout(call.timeoutHandle);
-        call.reject(err);
-      }
-      this.pending.clear();
-      this.started = false;
     });
 
-    this.proc.on("error", (err) => {
-      for (const call of this.pending.values()) {
-        if (call.timeoutHandle) clearTimeout(call.timeoutHandle);
-        call.reject(new Error(`Search bridge process error: ${(err as Error).message}`));
-      }
-      this.pending.clear();
-      this.started = false;
+    proc.on("error", (err) => {
+      failPendingCalls(new Error(`Search bridge process error: ${(err as Error).message}`));
     });
   }
 
