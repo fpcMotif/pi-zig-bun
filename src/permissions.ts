@@ -1,3 +1,5 @@
+import path from "node:path";
+
 export type Capability =
   | "fs.read"
   | "fs.write"
@@ -57,7 +59,7 @@ function pathAllowed(policyPatterns: string[] | "*" | undefined, target: string)
     return true;
   }
 
-  const normalizedTarget = target.replace(/\\+/g, "/");
+  const normalizedTarget = path.posix.normalize(target.replace(/\\+/g, "/"));
   return policyPatterns.some((pattern) => patternToRegex(pattern).test(normalizedTarget));
 }
 

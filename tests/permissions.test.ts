@@ -5,6 +5,18 @@ import path from "node:path";
 import { CapabilityManager, loadPolicyFile } from "../src/permissions";
 
 describe("CapabilityManager glob and transitions", () => {
+  test("prevents path traversal bypass via backslashes and dot dots", () => {
+    const manager = new CapabilityManager({
+      "fs.read": ["src/**"],
+    });
+
+    expect(manager.can("fs.read", "src/../README.md")).toBe(false);
+    expect(manager.can("fs.read", "src\\..\\README.md")).toBe(false);
+    expect(manager.can("fs.read", "src/sub/../../package.json")).toBe(false);
+    expect(manager.can("fs.read", "src\\sub\\..\\..\\package.json")).toBe(false);
+  });
+
+
   test("supports single-star and double-star semantics", () => {
     const manager = new CapabilityManager({
       "fs.read": ["src/*.ts", "tests/**"],
