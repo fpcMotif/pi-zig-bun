@@ -50,6 +50,49 @@ rl.on("line", (line) => {
 }
 
 describe("SearchBridge protocol behavior", () => {
+
+  test("stderr error is silently caught when appendFileSync throws", async () => {
+    const fixture = await createFakeBridgeBinary("stderr");
+
+    const piDir = path.join(fixture.root, ".pi");
+    await import("node:fs/promises").then(fs => fs.mkdir(piDir, { recursive: true }));
+    const logFile = path.join(piDir, "search-bridge.stderr.log");
+    await writeFile(logFile, "initial", "utf8");
+    await chmod(logFile, 0o444); // Read-only
+
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    try {
+      await bridge.call("search.files", { query: "abc" });
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(true).toBe(true); // Should not crash
+    } finally {
+      await bridge.stop();
+      await chmod(logFile, 0o666).catch(() => {});
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("stderr error is silently caught when mkdirSync throws", async () => {
+    const fixture = await createFakeBridgeBinary("stderr");
+
+    const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
+    try {
+      await bridge.call("search.files", { query: "abc" });
+
+      const piDir = path.join(fixture.root, ".pi");
+      await rm(piDir, { recursive: true, force: true });
+      await writeFile(piDir, "not a directory", "utf8");
+
+      await bridge.call("search.files", { query: "abc" });
+
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(true).toBe(true); // Should not crash
+    } finally {
+      await bridge.stop();
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   test("handles framed JSON-RPC responses", async () => {
     const fixture = await createFakeBridgeBinary("ok");
     const bridge = new SearchBridge({ binaryPath: fixture.binaryPath, workspaceRoot: fixture.root, requestTimeoutMs: 200 });
